@@ -7,7 +7,6 @@ pub const TokenType = enum {
 
     Import,
     Struct,
-    Class,
     Fn,
     Return,
     Var,

@@ -15,7 +15,7 @@ pub const ScopeType = enum {
     Global,
 };
 
-pub const FunctionOverloads = std.ArrayListUnmanaged(FunctionSymbol);
+pub const FunctionOverload = std.ArrayListUnmanaged(FunctionSymbol);
 
 pub const Scope = struct {
     allocator: std.mem.Allocator,
@@ -27,7 +27,7 @@ pub const Scope = struct {
 
     function: ?FunctionSymbol,
 
-    functions: std.StringHashMapUnmanaged(FunctionOverloads),
+    functions: std.StringHashMapUnmanaged(FunctionOverload),
     types: std.StringHashMapUnmanaged(TypeSymbol),
     variables: std.StringHashMapUnmanaged(VariableSymbol),
 
@@ -45,7 +45,7 @@ pub const Scope = struct {
             .parent = parent,
             .type = .Block,
             .function = null,
-            .functions = std.StringHashMapUnmanaged(FunctionOverloads){},
+            .functions = std.StringHashMapUnmanaged(FunctionOverload){},
             .types = std.StringHashMapUnmanaged(TypeSymbol){},
             .variables = std.StringHashMapUnmanaged(VariableSymbol){},
         };
@@ -76,12 +76,12 @@ pub const Scope = struct {
         return self.parent == null;
     }
 
-    fn signatures_equal(a: FunctionSymbol, b: FunctionSymbol) bool {
+    fn function_equal(a: FunctionSymbol, b: FunctionSymbol) bool {
         if (a.type.parameters.len != b.type.parameters.len) return false;
         if (a.type.generics.len != b.type.generics.len) return false;
 
-        for (a.type.parameters, b.type.parameters) |pa, pb| {
-            if (!types_equal(pa.type.*, pb.type.*)) return false;
+        for (a.type.parameters, b.type.parameters) |parameter_a, parameter_b| {
+            if (!types_equal(parameter_a.type.*, parameter_b.type.*)) return false;
         }
 
         return true;
@@ -103,37 +103,40 @@ pub const Scope = struct {
     pub fn add_function(self: *Scope, function: FunctionSymbol) !void {
         if (self.functions.getPtr(function.name)) |overloads| {
             for (overloads.items) |existing| {
-                if (signatures_equal(existing, function)) {
+                if (function_equal(existing, function)) {
                     return error.DuplicateFunction;
                 }
             }
+
             try overloads.append(self.allocator, function);
         } else {
-            var overloads = FunctionOverloads{};
+            var overloads = FunctionOverload{};
+
             try overloads.append(self.allocator, function);
+
             try self.functions.put(self.allocator, function.name, overloads);
         }
     }
 
-    pub fn lookup_function(self: *Scope, name: []const u8) ?FunctionSymbol {
+    pub fn lookup_first_function(self: *Scope, name: []const u8) ?FunctionSymbol {
         if (self.functions.get(name)) |overloads| {
             if (overloads.items.len > 0) return overloads.items[0];
         }
 
         if (self.parent) |parent| {
-            return parent.lookup_function(name);
+            return parent.lookup_first_function(name);
         }
 
         return null;
     }
 
-    pub fn lookup_function_overloads(self: *Scope, name: []const u8) ?[]FunctionSymbol {
+    pub fn lookup_function(self: *Scope, name: []const u8) ?[]FunctionSymbol {
         if (self.functions.get(name)) |overloads| {
             return overloads.items;
         }
 
         if (self.parent) |parent| {
-            return parent.lookup_function_overloads(name);
+            return parent.lookup_function(name);
         }
 
         return null;

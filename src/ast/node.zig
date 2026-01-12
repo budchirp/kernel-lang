@@ -16,7 +16,6 @@ pub const Node = union(enum) {
     ImportStatement: ImportStatement,
     ExternStatement: ExternStatement,
     StructStatement: StructStatement,
-    ClassStatement: ClassStatement,
     FunctionStatement: FunctionStatement,
     VariableStatement: VariableStatement,
     IfExpression: IfExpression,
@@ -44,7 +43,6 @@ pub const Node = union(enum) {
             .ImportStatement => |s| s.position,
             .StructStatement => |s| s.position,
             .ExternStatement => |e| e.position(),
-            .ClassStatement => |c| c.position,
             .FunctionStatement => |f| f.position,
             .VariableStatement => |v| v.position,
             .IfExpression => |i| i.position,
@@ -99,7 +97,6 @@ pub const Node = union(enum) {
             .BinaryExpression => |*b| b.deinit(),
             .UnaryExpression => |*u| u.deinit(),
             .StructStatement => |*s| s.deinit(),
-            .ClassStatement => |*c| c.deinit(),
             .IfExpression => |*i| i.deinit(),
             .ForStatement => |*f| f.deinit(),
             .WhileStatement => |*w| w.deinit(),
@@ -124,7 +121,6 @@ pub const Node = union(enum) {
             .ImportStatement => |s| s.dump(depth),
             .StructStatement => |s| s.dump(depth),
             .ExternStatement => |e| e.dump(depth),
-            .ClassStatement => |c| c.dump(depth),
             .FunctionStatement => |f| f.dump(depth),
             .VariableStatement => |v| v.dump(depth),
             .IfExpression => |i| i.dump(depth),
@@ -670,11 +666,12 @@ pub const BlockStatement = struct {
     position: Position,
     type: Type = Type.unknown(),
 
-    scope: Scope,
+    scope: *Scope,
     statements: std.ArrayListUnmanaged(Node),
 
     pub fn deinit(self: *BlockStatement) void {
         self.scope.deinit();
+        self.allocator.destroy(self.scope);
 
         for (self.statements.items) |*statement| {
             statement.deinit();
@@ -820,7 +817,7 @@ pub const StructStatement = struct {
     visibility: Visibility,
 
     name: Identifier,
-    parent: ?Identifier = null,
+    parent: ?TypeExpression = null,
     generics: std.ArrayListUnmanaged(GenericParameter),
     fields: std.ArrayListUnmanaged(StructStatementField),
 
@@ -1030,101 +1027,6 @@ pub const GenericParameter = struct {
             c.dump(depth + 1);
         }
         std.debug.print(",\n", .{});
-        type_zig.print_indent(depth);
-        std.debug.print(")", .{});
-    }
-};
-
-pub const ClassStatement = struct {
-    allocator: std.mem.Allocator,
-
-    position: Position,
-
-    visibility: Visibility,
-
-    name: Identifier,
-    generics: std.ArrayListUnmanaged(GenericParameter),
-    fields: std.ArrayListUnmanaged(VariableStatement),
-    methods: std.ArrayListUnmanaged(FunctionStatement),
-
-    scope: Scope,
-
-    pub fn deinit(self: *ClassStatement) void {
-        for (self.generics.items) |*parameter| {
-            parameter.deinit();
-        }
-        self.generics.deinit(self.allocator);
-
-        for (self.fields.items) |*field| {
-            field.deinit();
-        }
-        self.fields.deinit(self.allocator);
-
-        for (self.methods.items) |*method| {
-            method.deinit();
-        }
-        self.methods.deinit(self.allocator);
-
-        self.scope.deinit();
-    }
-
-    pub fn dump(self: ClassStatement, depth: usize) void {
-        std.debug.print("ClassStatement(\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("name: ", .{});
-        self.name.dump(depth + 1);
-        std.debug.print(",\n", .{});
-
-        type_zig.print_indent(depth + 1);
-        std.debug.print("generics: [", .{});
-        if (self.generics.items.len > 0) {
-            std.debug.print("\n", .{});
-
-            for (self.generics.items, 0..) |gp, i| {
-                if (i > 0) std.debug.print(",\n", .{});
-                type_zig.print_indent(depth + 2);
-                gp.dump(depth + 2);
-            }
-
-            std.debug.print("\n", .{});
-            type_zig.print_indent(depth + 1);
-        }
-        std.debug.print("],\n", .{});
-
-        type_zig.print_indent(depth + 1);
-        std.debug.print("fields: [", .{});
-        if (self.fields.items.len > 0) {
-            std.debug.print("\n", .{});
-
-            for (self.fields.items, 0..) |field, i| {
-                if (i > 0) std.debug.print(",\n", .{});
-                type_zig.print_indent(depth + 2);
-                field.dump(depth + 2);
-            }
-
-            std.debug.print("\n", .{});
-            type_zig.print_indent(depth + 1);
-        }
-        std.debug.print("],\n", .{});
-
-        type_zig.print_indent(depth + 1);
-        std.debug.print("methods: [", .{});
-        if (self.methods.items.len > 0) {
-            std.debug.print("\n", .{});
-
-            for (self.methods.items, 0..) |method, i| {
-                if (i > 0) std.debug.print(",\n", .{});
-                type_zig.print_indent(depth + 2);
-                method.dump(depth + 2);
-            }
-
-            std.debug.print("\n", .{});
-            type_zig.print_indent(depth + 1);
-        }
-        std.debug.print("],\n", .{});
-
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }

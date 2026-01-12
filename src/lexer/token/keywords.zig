@@ -8,7 +8,6 @@ pub const Keywords = struct {
     pub fn get(ident: []const u8) ?TokenType {
         if (std.mem.eql(u8, ident, "import")) return TokenType.Import;
         if (std.mem.eql(u8, ident, "struct")) return TokenType.Struct;
-        if (std.mem.eql(u8, ident, "class")) return TokenType.Class;
         if (std.mem.eql(u8, ident, "fn")) return TokenType.Fn;
         if (std.mem.eql(u8, ident, "operator")) return TokenType.Operator;
         if (std.mem.eql(u8, ident, "delete")) return TokenType.Delete;

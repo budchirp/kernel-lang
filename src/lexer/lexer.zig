@@ -318,10 +318,10 @@ pub const Lexer = struct {
                     self.read_char();
                     self.read_char();
                 } else {
-                    literal = ".";
-                    token_type = TokenType.Dot;
+                literal = ".";
+                token_type = TokenType.Dot;
 
-                    self.read_char();
+                self.read_char();
                 }
             },
             ':' => {

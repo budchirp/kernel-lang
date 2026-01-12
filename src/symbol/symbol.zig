@@ -31,10 +31,8 @@ pub const FunctionSymbol = struct {
 
     type: FunctionType,
 
-    is_operator: bool,
-
     pub fn dump(self: FunctionSymbol, depth: usize) void {
-        std.debug.print("FunctionSymbol(name: '{s}', visibility: {s}, is_operator: {}, type: \n", .{ self.name, @tagName(self.visibility), self.is_operator });
+        std.debug.print("FunctionSymbol(name: '{s}', visibility: {s}, type: \n", .{ self.name, @tagName(self.visibility) });
         self.type.dump(depth + 1);
         std.debug.print(")", .{});
     }

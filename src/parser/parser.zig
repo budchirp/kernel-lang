@@ -47,7 +47,6 @@ const FunctionProto = node_zig.FunctionProto;
 const IfExpression = node_zig.IfExpression;
 const ForStatement = node_zig.ForStatement;
 const WhileStatement = node_zig.WhileStatement;
-const ClassStatement = node_zig.ClassStatement;
 const ImportStatement = node_zig.ImportStatement;
 const CallExpression = node_zig.CallExpression;
 const MemberExpression = node_zig.MemberExpression;
@@ -134,7 +133,6 @@ pub const Parser = struct {
         const position = self.current_token.position;
 
         var statements = std.ArrayListUnmanaged(Node){};
-
         while (self.current_token.type != TokenType.EOF) {
             const statement = try self.parse_statement();
 
@@ -155,7 +153,6 @@ pub const Parser = struct {
 
     fn parse_statement(self: *Parser) ParserError!Node {
         var visibility = Visibility.Public;
-
         switch (self.current_token.type) {
             .Private => {
                 visibility = Visibility.Private;
@@ -174,7 +171,6 @@ pub const Parser = struct {
             .Fn => self.parse_function_statement(visibility),
             .Return => self.parse_return_statement(),
             .Struct => self.parse_struct_statement(visibility),
-            .Class => self.parse_class_statement(visibility),
             .Extern => self.parse_extern_statement(visibility),
             .If => self.parse_if_expression(),
             .While => self.parse_while_statement(),
@@ -192,6 +188,7 @@ pub const Parser = struct {
         return switch (self.current_token.type) {
             .Identifier => blk: {
                 const identifier = try self.parse_identifier();
+
                 break :blk Node{ .Identifier = identifier };
             },
             .Number => {
@@ -199,7 +196,9 @@ pub const Parser = struct {
                     .position = self.current_token.position,
                     .value = self.current_token.literal,
                 };
+
                 self.next_token();
+
                 return Node{ .NumberLiteral = number };
             },
             .Float => {
@@ -207,7 +206,9 @@ pub const Parser = struct {
                     .position = self.current_token.position,
                     .value = self.current_token.literal,
                 };
+
                 self.next_token();
+
                 return Node{ .FloatLiteral = float };
             },
             .String => {
@@ -216,7 +217,9 @@ pub const Parser = struct {
                     .position = self.current_token.position,
                     .value = self.current_token.literal,
                 };
+
                 self.next_token();
+
                 return Node{ .StringLiteral = string };
             },
             .Boolean => {
@@ -224,7 +227,9 @@ pub const Parser = struct {
                     .position = self.current_token.position,
                     .value = std.mem.eql(u8, self.current_token.literal, "true"),
                 };
+
                 self.next_token();
+
                 return Node{ .BooleanLiteral = boolean };
             },
             .LeftParen => {
@@ -372,10 +377,9 @@ pub const Parser = struct {
         try self.expect_token(TokenType.LeftParen);
 
         const env = self.env;
-        const current_scope = env.current_scope;
 
-        var scope = try Scope.init(self.allocator, "while", current_scope);
-        env.set_current_scope(&scope);
+        const scope = try memory.create(self.allocator, Scope, try Scope.init(self.allocator, "while", env.current_scope));
+        env.set_current_scope(scope);
 
         const condition = try memory.create(self.allocator, Node, try self.parse_expression());
 
@@ -383,7 +387,7 @@ pub const Parser = struct {
 
         const body = try self.parse_block_statement(scope);
 
-        env.set_current_scope(current_scope);
+        env.set_current_scope(scope.parent);
 
         return Node{
             .WhileStatement = WhileStatement{
@@ -403,10 +407,9 @@ pub const Parser = struct {
         try self.expect_token(TokenType.LeftParen);
 
         const env = self.env;
-        const current_scope = env.current_scope;
 
-        var scope = try Scope.init(self.allocator, "for", current_scope);
-        env.set_current_scope(&scope);
+        const scope = try memory.create(self.allocator, Scope, try Scope.init(self.allocator, "for", env.current_scope));
+        env.set_current_scope(scope);
 
         var initializer: ?*Node = null;
         if (self.current_token.type != TokenType.Semicolon) {
@@ -435,7 +438,7 @@ pub const Parser = struct {
 
         const body = try self.parse_block_statement(scope);
 
-        env.set_current_scope(current_scope);
+        env.set_current_scope(scope.parent);
 
         return Node{
             .ForStatement = ForStatement{
@@ -509,28 +512,6 @@ pub const Parser = struct {
         };
     }
 
-    fn parse_arguments(self: *Parser) ParserError!std.ArrayListUnmanaged(Argument) {
-        var arguments = std.ArrayListUnmanaged(Argument){};
-        while (self.current_token.type != TokenType.RightParen) {
-            const argument = try self.parse_expression();
-
-            try arguments.append(self.allocator, Argument{
-                .allocator = self.allocator,
-                .position = argument.position(),
-                .name = null,
-                .value = try memory.create(self.allocator, Node, argument),
-            });
-
-            if (self.current_token.type == TokenType.Comma) {
-                self.next_token();
-            }
-        }
-
-        try self.expect_token(TokenType.RightParen);
-
-        return arguments;
-    }
-
     fn parse_member_expression(self: *Parser, object: Node) ParserError!Node {
         const position = self.current_token.position;
 
@@ -567,24 +548,6 @@ pub const Parser = struct {
         };
     }
 
-    fn get_precedence(self: *Parser, token_type: TokenType) u8 {
-        _ = self;
-
-        return switch (token_type) {
-            .Assign => 1,
-            .Or => 2,
-            .And => 3,
-            .Equals, .NotEquals => 4,
-            .LessThan, .GreaterThan, .LessEqual, .GreaterEqual, .Is => 5,
-            .Plus, .Minus => 6,
-            .Asterisk, .Divide, .Modulo => 7,
-            .Dot => 8,
-            .Increment, .Decrement => 9,
-            .As => 10,
-            else => 0,
-        };
-    }
-
     fn parse_unary_expression(self: *Parser) ParserError!Node {
         return switch (self.current_token.type) {
             .Minus, .Asterisk, .Ampersand, .Not, .Delete, .New => {
@@ -612,15 +575,12 @@ pub const Parser = struct {
 
         while (true) {
             if (self.current_token.type == TokenType.LeftParen or self.current_token.type == TokenType.LessThan) {
-                // Check if this is a call expression with generics (e.g., func<T>(...))
-                // or just a comparison (e.g., a < b)
                 if (self.current_token.type == TokenType.LessThan) {
-                    // Only treat as generic call if it looks like a call (identifier followed by <Type>(...))
-                    // This is a heuristic: if we see an identifier on the left and < followed by a type
                     if (left != .Identifier) {
                         break;
                     }
                 }
+
                 left = try self.parse_call_expression(left);
             } else if (self.current_token.type == TokenType.Dot) {
                 left = try self.parse_member_expression(left);
@@ -694,6 +654,7 @@ pub const Parser = struct {
         var is_operator = false;
         if (self.current_token.type == TokenType.Operator) {
             is_operator = true;
+
             self.next_token();
         }
 
@@ -702,16 +663,15 @@ pub const Parser = struct {
         const proto = try self.parse_function_proto(visibility);
 
         const env = self.env;
-        const current_scope = env.current_scope;
 
-        var scope = try Scope.init(self.allocator, proto.name.value, current_scope);
-        env.set_current_scope(&scope);
-
+        const scope = try memory.create(self.allocator, Scope, try Scope.init(self.allocator, proto.name.value, env.current_scope));
         scope.type = .Function;
+
+        env.set_current_scope(scope);
 
         const body = try self.parse_block_statement(scope);
 
-        env.set_current_scope(current_scope);
+        env.set_current_scope(scope.parent);
 
         return Node{
             .FunctionStatement = FunctionStatement{
@@ -726,22 +686,13 @@ pub const Parser = struct {
     fn parse_function_proto(self: *Parser, visibility: Visibility) ParserError!FunctionProto {
         const token = self.current_token;
 
-        var name: ?Identifier = null;
+        var name: Identifier = undefined;
         if (token.type == .Identifier) {
             name = try self.parse_identifier();
         } else {
             const operator = switch (token.type) {
-                .Plus => "+",
-                .Minus => "-",
-                .Asterisk => "*",
-                .Divide => "/",
-                .Modulo => "%",
-                .Equals => "==",
-                .NotEquals => "!=",
-                .LessThan => "<",
-                .GreaterThan => ">",
-                .LessEqual => "<=",
-                .GreaterEqual => ">=",
+                .Plus, .Minus, .Asterisk, .Divide, .Modulo, .Equals, .NotEquals, .LessThan, .GreaterThan, .LessEqual, .GreaterEqual => token.literal,
+
                 else => {
                     self.context.logger.err(
                         ErrorKind.ParserError,
@@ -773,7 +724,7 @@ pub const Parser = struct {
         return FunctionProto{
             .allocator = self.allocator,
             .visibility = visibility,
-            .name = name.?,
+            .name = name,
             .generics = generics,
             .parameters = parameters,
             .return_type = return_type,
@@ -787,10 +738,10 @@ pub const Parser = struct {
 
         const name = try self.parse_identifier();
 
-        var parent: ?Identifier = null;
+        var parent: ?TypeExpression = null;
         if (self.current_token.type == TokenType.Colon) {
             self.next_token();
-            parent = try self.parse_identifier();
+            parent = try self.parse_type_expression();
         }
 
         const generics = try self.parse_generic_parameters();
@@ -799,7 +750,7 @@ pub const Parser = struct {
 
         var fields = std.ArrayListUnmanaged(StructStatementField){};
 
-        while (self.current_token.type != TokenType.RightBrace and self.current_token.type != TokenType.EOF) {
+        while (self.current_token.type != TokenType.RightBrace) {
             const field = try self.parse_identifier();
 
             try self.expect_token(TokenType.Colon);
@@ -824,82 +775,6 @@ pub const Parser = struct {
                 .parent = parent,
                 .generics = generics,
                 .fields = fields,
-            },
-        };
-    }
-
-    fn parse_class_statement(self: *Parser, visibility: Visibility) ParserError!Node {
-        const position = self.current_token.position;
-
-        try self.expect_token(TokenType.Class);
-
-        const name = try self.parse_identifier();
-
-        const generics = try self.parse_generic_parameters();
-
-        const env = self.env;
-        const current_scope = env.current_scope;
-
-        var scope = try Scope.init(self.allocator, name.value, current_scope);
-        env.set_current_scope(&scope);
-
-        try self.expect_token(TokenType.LeftBrace);
-
-        var fields = std.ArrayListUnmanaged(VariableStatement){};
-        var methods = std.ArrayListUnmanaged(FunctionStatement){};
-
-        while (self.current_token.type != TokenType.RightBrace and self.current_token.type != TokenType.EOF) {
-            var member_visibility = Visibility.Public;
-            switch (self.current_token.type) {
-                .Private => {
-                    member_visibility = Visibility.Private;
-                    self.next_token();
-                },
-                .Public => {
-                    member_visibility = Visibility.Public;
-                    self.next_token();
-                },
-                else => {},
-            }
-
-            switch (self.current_token.type) {
-                .Var => {
-                    const field = try self.parse_variable_statement(member_visibility);
-                    try fields.append(self.allocator, field.VariableStatement);
-                },
-                .Fn => {
-                    const method = try self.parse_function_statement(member_visibility);
-                    try methods.append(self.allocator, method.FunctionStatement);
-                },
-                .Operator => {
-                    const method = try self.parse_function_statement(member_visibility);
-                    try methods.append(self.allocator, method.FunctionStatement);
-                },
-                else => {
-                    self.context.logger.err(
-                        ErrorKind.ParserError,
-                        self.current_token.position,
-                        "expected var, fn, operator",
-                    );
-                    return error.UnexpectedToken;
-                },
-            }
-        }
-
-        try self.expect_token(TokenType.RightBrace);
-
-        env.set_current_scope(current_scope);
-
-        return Node{
-            .ClassStatement = ClassStatement{
-                .allocator = self.allocator,
-                .position = position,
-                .visibility = visibility,
-                .name = name,
-                .generics = generics,
-                .fields = fields,
-                .methods = methods,
-                .scope = scope,
             },
         };
     }
@@ -1005,10 +880,15 @@ pub const Parser = struct {
         };
     }
 
-    fn parse_block_statement(self: *Parser, scope: ?Scope) ParserError!BlockStatement {
+    fn parse_block_statement(self: *Parser, scope: ?*Scope) ParserError!BlockStatement {
         const position = self.current_token.position;
 
         try self.expect_token(TokenType.LeftBrace);
+
+        const env = self.env;
+
+        const block_scope = if (scope) |s| s else try memory.create(self.allocator, Scope, try Scope.init(self.allocator, "block", env.current_scope));
+        env.set_current_scope(block_scope);
 
         var statements = std.ArrayListUnmanaged(Node){};
         while (self.current_token.type != TokenType.RightBrace and self.current_token.type != TokenType.EOF) {
@@ -1022,13 +902,12 @@ pub const Parser = struct {
 
         try self.expect_token(TokenType.RightBrace);
 
-        const env = self.env;
-        const current_scope = env.current_scope;
+        env.set_current_scope(block_scope.parent);
 
         return BlockStatement{
             .allocator = self.allocator,
             .position = position,
-            .scope = if (scope) |s| s else try Scope.init(self.allocator, "block", current_scope),
+            .scope = block_scope,
             .statements = statements,
         };
     }
@@ -1220,13 +1099,30 @@ pub const Parser = struct {
         return generics;
     }
 
+    fn parse_arguments(self: *Parser) ParserError!std.ArrayListUnmanaged(Argument) {
+        var arguments = std.ArrayListUnmanaged(Argument){};
+        while (self.current_token.type != TokenType.RightParen) {
+            const argument = try self.parse_expression();
+
+            try arguments.append(self.allocator, Argument{
+                .allocator = self.allocator,
+                .position = argument.position(),
+                .name = null,
+                .value = try memory.create(self.allocator, Node, argument),
+            });
+
+            if (self.current_token.type == TokenType.Comma) {
+                self.next_token();
+            }
+        }
+
+        try self.expect_token(TokenType.RightParen);
+
+        return arguments;
+    }
+
     fn parse_parameters(self: *Parser) ParserError!std.ArrayListUnmanaged(Parameter) {
         var parameters = std.ArrayListUnmanaged(Parameter){};
-
-        if (self.current_token.type == TokenType.RightParen) {
-            self.next_token();
-            return parameters;
-        }
 
         while (self.current_token.type != TokenType.RightParen) {
             const parameter = try self.parse_parameter();
@@ -1260,6 +1156,24 @@ pub const Parser = struct {
             .name = name,
             .type = @"type",
             .is_variadic = is_variadic,
+        };
+    }
+
+    fn get_precedence(self: *Parser, token_type: TokenType) u8 {
+        _ = self;
+
+        return switch (token_type) {
+            .Assign => 1,
+            .Or => 2,
+            .And => 3,
+            .Equals, .NotEquals => 4,
+            .LessThan, .GreaterThan, .LessEqual, .GreaterEqual, .Is => 5,
+            .Plus, .Minus => 6,
+            .Asterisk, .Divide, .Modulo => 7,
+            .Dot => 8,
+            .Increment, .Decrement => 9,
+            .As => 10,
+            else => 0,
         };
     }
 };

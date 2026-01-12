@@ -39,8 +39,8 @@ pub const Env = struct {
         self.allocator.destroy(self.current_scope);
     }
 
-    pub fn set_current_scope(self: *Env, scope: *Scope) void {
-        self.current_scope = scope;
+    pub fn set_current_scope(self: *Env, scope: ?*Scope) void {
+        self.current_scope = scope orelse self.current_scope;
     }
 
     fn builtin_types(self: *Env) !void {
