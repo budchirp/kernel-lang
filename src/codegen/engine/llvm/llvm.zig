@@ -559,7 +559,7 @@ pub const LLVMCodegen = struct {
 
         if (statement.initializer) |initializer| {
             const result = try self.generate_expression(initializer, .{ .type = variable_symbol.type });
-            value = try self.cast_type(result.value, initializer.get_type(), variable_symbol.type);
+            value = result.value;
         }
 
         const name = std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ current_scope.name, variable_symbol.name }) catch return error.OutOfMemory;
@@ -594,19 +594,7 @@ pub const LLVMCodegen = struct {
 
     fn generate_return_statement(self: *LLVMCodegen, statement: *ReturnStatement) CodegenError!CodegenResult {
         const result = try self.generate_expression(statement.value, .{});
-        var value = result.value;
-
-        const env = self.program.env;
-        const current_scope = env.current_scope;
-
-        if (current_scope.type == .Function) {
-            if (current_scope.function) |function| {
-                const value_type = self.resolve_type(statement.value.get_type());
-                const return_type = self.resolve_type(function.type.return_type.*);
-
-                value = try self.cast_type(value, value_type, return_type);
-            }
-        }
+        const value = result.value;
 
         return CodegenResult{
             .value = c.LLVMBuildRet(self.llvm_context.builder, value),
@@ -734,14 +722,11 @@ pub const LLVMCodegen = struct {
 
         switch (expression.operator.type) {
             .Assign => {
-                const left_type = self.resolve_type(expression.left.get_type());
-
                 const left_result = try self.generate_expression(expression.left, .{ .load = false });
                 const left = left_result.value;
 
                 const right_result = try self.generate_expression(expression.right, .{});
-                const right_type = self.resolve_type(expression.right.get_type());
-                const right = try self.cast_type(right_result.value, right_type, left_type);
+                const right = right_result.value;
 
                 _ = c.LLVMBuildStore(self.llvm_context.builder, right, left);
 
@@ -758,45 +743,38 @@ pub const LLVMCodegen = struct {
             },
             else => {
                 const left_result = try self.generate_expression(expression.left, .{});
-
                 const right_result = try self.generate_expression(expression.right, .{});
 
-                const left_type = self.resolve_type(expression.left.get_type());
-                const right_type = self.resolve_type(expression.right.get_type());
-
-                const common_type = self.resolve_common_type(left_type, right_type);
-
-                const left = try self.cast_type(left_result.value, left_type, common_type);
-                const right = try self.cast_type(right_result.value, right_type, common_type);
+                const left = left_result.value;
+                const right = right_result.value;
 
                 switch (expression.operator.type) {
                     .Plus => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFAdd(self.llvm_context.builder, left, right, "");
                         } else {
                             value = c.LLVMBuildAdd(self.llvm_context.builder, left, right, "");
                         }
                     },
                     .Minus => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFSub(self.llvm_context.builder, left, right, "");
                         } else {
                             value = c.LLVMBuildSub(self.llvm_context.builder, left, right, "");
                         }
                     },
                     .Asterisk => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFMul(self.llvm_context.builder, left, right, "");
                         } else {
                             value = c.LLVMBuildMul(self.llvm_context.builder, left, right, "");
                         }
                     },
                     .Divide => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFDiv(self.llvm_context.builder, left, right, "");
                         } else {
-                            // Assuming signed for now for simplicity, or check is_unsigned
-                            if (common_type.Integer.is_unsigned) {
+                            if (expression.type.Integer.is_unsigned) {
                                 value = c.LLVMBuildUDiv(self.llvm_context.builder, left, right, "");
                             } else {
                                 value = c.LLVMBuildSDiv(self.llvm_context.builder, left, right, "");
@@ -804,10 +782,10 @@ pub const LLVMCodegen = struct {
                         }
                     },
                     .Modulo => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFRem(self.llvm_context.builder, left, right, "");
                         } else {
-                            if (common_type.Integer.is_unsigned) {
+                            if (expression.type.Integer.is_unsigned) {
                                 value = c.LLVMBuildURem(self.llvm_context.builder, left, right, "");
                             } else {
                                 value = c.LLVMBuildSRem(self.llvm_context.builder, left, right, "");
@@ -817,24 +795,24 @@ pub const LLVMCodegen = struct {
                     .And => value = c.LLVMBuildAnd(self.llvm_context.builder, left, right, ""),
                     .Or => value = c.LLVMBuildOr(self.llvm_context.builder, left, right, ""),
                     .Equals => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOEQ, left, right, "");
                         } else {
                             value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntEQ, left, right, "");
                         }
                     },
                     .NotEquals => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealONE, left, right, "");
                         } else {
                             value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntNE, left, right, "");
                         }
                     },
                     .LessThan => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOLT, left, right, "");
                         } else {
-                            if (common_type.Integer.is_unsigned) {
+                            if (expression.type.Integer.is_unsigned) {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntULT, left, right, "");
                             } else {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSLT, left, right, "");
@@ -842,10 +820,10 @@ pub const LLVMCodegen = struct {
                         }
                     },
                     .GreaterThan => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOGT, left, right, "");
                         } else {
-                            if (common_type.Integer.is_unsigned) {
+                            if (expression.type.Integer.is_unsigned) {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntUGT, left, right, "");
                             } else {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSGT, left, right, "");
@@ -853,10 +831,10 @@ pub const LLVMCodegen = struct {
                         }
                     },
                     .LessEqual => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOLE, left, right, "");
                         } else {
-                            if (common_type.Integer.is_unsigned) {
+                            if (expression.type.Integer.is_unsigned) {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntULE, left, right, "");
                             } else {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSLE, left, right, "");
@@ -864,10 +842,10 @@ pub const LLVMCodegen = struct {
                         }
                     },
                     .GreaterEqual => {
-                        if (std.meta.activeTag(common_type) == .Float) {
+                        if (expression.type == .Float) {
                             value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOGE, left, right, "");
                         } else {
-                            if (common_type.Integer.is_unsigned) {
+                            if (expression.type.Integer.is_unsigned) {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntUGE, left, right, "");
                             } else {
                                 value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSGE, left, right, "");
@@ -924,7 +902,7 @@ pub const LLVMCodegen = struct {
 
         for (arguments, 0..) |argument, i| {
             const value_result = try self.generate_expression(argument.value, .{});
-            const value = try self.cast_type(value_result.value, argument.value.get_type(), element_type);
+            const value = value_result.value;
 
             var indices = [_]c.LLVMValueRef{
                 c.LLVMConstInt(c.LLVMInt32TypeInContext(self.llvm_context.llvm), 0, 0),
@@ -952,19 +930,7 @@ pub const LLVMCodegen = struct {
             if (i >= required_params and is_variadic and !is_llvm_variadic) break;
 
             const value_result = try self.generate_expression(argument.value, .{});
-            var value = value_result.value;
-
-            if (i < required_params) {
-                const parameter_type = self.resolve_type(parameters[i].type.*);
-                const argument_type = if (argument.value.* == .Identifier) blk: {
-                    if (self.program.env.current_scope.lookup_variable(argument.value.Identifier.value)) |symbol| {
-                        break :blk symbol.type;
-                    }
-                    break :blk argument.value.get_type();
-                } else argument.value.get_type();
-
-                value = try self.cast_type(value, argument_type, parameter_type);
-            }
+            const value = value_result.value;
 
             try arguments.append(self.allocator, value);
         }
@@ -1229,24 +1195,5 @@ pub const LLVMCodegen = struct {
         }
 
         return @"type";
-    }
-
-    fn resolve_common_type(self: *LLVMCodegen, left: Type, right: Type) Type {
-        _ = self;
-        if (left == .Float or right == .Float) {
-            if (left == .Float and right == .Float) {
-                if (left.Float.size >= right.Float.size) return left else return right;
-            }
-
-            if (left == .Float) return left;
-
-            return right;
-        }
-
-        if (left == .Integer and right == .Integer) {
-            if (left.Integer.size >= right.Integer.size) return left else return right;
-        }
-
-        return left;
     }
 };

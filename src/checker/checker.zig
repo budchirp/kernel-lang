@@ -301,6 +301,7 @@ pub const Checker = struct {
             }
 
             expression.type = consequence_type;
+
             return consequence_type;
         }
 
@@ -387,11 +388,11 @@ pub const Checker = struct {
         }
 
         for (statement.fields.items) |*field| {
-            field.type.value = try self.resolve_type(field.type.value);
+            const field_type = try self.resolve_type(field.type.value);
 
             try fields.append(self.allocator, type_zig.StructFieldType{
                 .name = field.name.value,
-                .type = try memory.create(self.allocator, Type, field.type.value),
+                .type = try memory.create(self.allocator, Type, field_type),
             });
         }
 
@@ -623,7 +624,6 @@ pub const Checker = struct {
 
         if (expression.callee.* == .Identifier) {
             const name = expression.callee.Identifier.value;
-
             if (current_scope.lookup_function(name)) |symbols| {
                 function = self.find_matching_overload(symbols, arguments.items, expression.generics.items);
             }
