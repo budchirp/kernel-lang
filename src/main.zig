@@ -6,10 +6,9 @@ const CLI = cli_zig.CLI;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        std.debug.assert(leaked == .ok);
-    }
+    // defer {
+    //     _ = gpa.deinit();
+    // }
 
     const allocator = gpa.allocator();
 

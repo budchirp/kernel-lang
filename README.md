@@ -22,7 +22,7 @@
 
 ### Advanced Features
 - [x] **Generic Functions** - Template-like functionality with type parameters
-- [x] **Monomorphization** - Compile-time specialization of generic functions
+- [x] **Monomorphization** - Compile-time specialization of generic functions and structs
 - [x] **Function Overloading** - Multiple functions with same name but different signatures
 - [x] **Variadic Functions** - Functions accepting variable number of arguments as arrays
 - [x] **Type Inheritance** - Struct inheritance with field merging
@@ -35,18 +35,17 @@
 ## 🚧 Potential Future Features
 
 ### Language Extensions
-- [ ] **Struct fields** - Object-oriented programming support
-- [ ] **Enums & Pattern Matching** - Sum types with exhaustive matching
-- [ ] **Modules & Imports** - Multi-file projects and dependency management
-- [ ] **Closures** - Anonymous functions with captures
+- [ ] **Struct methods**
+- [ ] **Enums & Pattern Matching**
+- [ ] **Modules & Imports**
+- [ ] **Closures**
 
 ### Compiler Improvements
-- [ ] **Optimization Passes** - LLVM optimization pipeline integration
-- [ ] **Debug Information** - Source-level debugging support
-- [ ] **Incremental Compilation** - Faster rebuilds for changed files
-- [ ] **Cross-Compilation** - Support for multiple target architectures
-- [ ] **Error Recovery** - Continue compilation after syntax errors
-- [ ] **Language Server** - IDE integration and autocomplete
+- [ ] **Optimization Passes**
+- [ ] **Debug Information**
+- [ ] **Incremental Compilation**
+- [ ] **Cross-Compilation**
+- [ ] **Language Server**
 
 ### Standard Library
 - [ ] **Core Library** - Basic data structures (vectors, hashmaps, strings)

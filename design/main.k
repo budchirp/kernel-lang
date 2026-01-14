@@ -1,48 +1,59 @@
 extern fn printf(fmt: string, ...args: i32[]): void
+
 extern fn malloc(size: i32): *void
 extern fn free(ptr: *void): void
 
-struct Point {
+fn allocate<T>(value: T): *T {
+    var ptr = malloc(128) as *T;
+    *ptr = value
+
+    return ptr
+}
+
+struct Error {
+    message: string
+}
+
+struct Result<T> {
+    value: T
+    error: Error
+}
+
+fn add<T: i32>(a: T, b: T): Result<T> {
+    return Result<T> {
+        value: a + b,
+        error: Error {
+            message: ""
+        }
+    }
+}
+
+struct Vector {
     x: i32
     y: i32
-}
-
-fn add<T: i32>(a: T, b: T): T {
-    return a + b;
-}
-
-fn allocate<T>(initializer: T): *T {
-    var ptr = malloc(128) as *T;
-    *ptr = initializer;
-    return ptr;
-}
-
-fn sum_array(...args: i32[]): i32 {
-    return args[0] + args[1] + args[2];
+    z: i32
 }
 
 fn main(): i32 {
-    var ptr = allocate<Point>(Point {
+    var vector_ptr = allocate<Vector>(Vector {
         x: 10,
-        y: 20
-    });
+        y: 20,
+        z: 30
+    })
 
-    var sum = add<i32>((*ptr).x, (*ptr).y);    
-    printf("Point sum: %d\n", sum);
+    var vector = *vector_ptr
 
-    free(ptr);
-
-    var x = 10;
-    var y = 10;
-
-    if (x == y) {
-        printf("x is equal to y\n");
-    } else {
-        printf("x is not equal to y\n");
+    var result = add<i32>(5, 20) 
+    if (result.error.message != "") {
+        printf("error: %s\n", result.error.message)
+        return 1
     }
 
-    var arr_sum = sum_array(100, 200, 300);
-    printf("Array sum: %d\n", arr_sum);
+    printf("`add`: %d\n", result.value)
 
-    return 0;
+    printf("`vector`: %d, %d, %d\n", vector.x, vector.y, vector.z)
+
+    free(vector_ptr)
+
+    return 0
 }

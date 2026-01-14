@@ -5,148 +5,14 @@ const token_type_zig = @import("../lexer/token/token_type.zig");
 const type_zig = @import("../types/type.zig");
 const scope_zig = @import("../symbol/scope.zig");
 const token_zig = @import("../lexer/token/token.zig");
+const symbol_zig = @import("../symbol/symbol.zig");
 
 const Position = position_zig.Position;
 const Token = token_zig.Token;
 const TokenType = token_type_zig.TokenType;
 const Type = type_zig.Type;
 const Scope = scope_zig.Scope;
-
-pub const Node = union(enum) {
-    ImportStatement: ImportStatement,
-    ExternStatement: ExternStatement,
-    StructStatement: StructStatement,
-    FunctionStatement: FunctionStatement,
-    VariableStatement: VariableStatement,
-    IfExpression: IfExpression,
-    ForStatement: ForStatement,
-    WhileStatement: WhileStatement,
-    ReturnStatement: ReturnStatement,
-    ExpressionStatement: ExpressionStatement,
-    BlockStatement: BlockStatement,
-    BinaryExpression: BinaryExpression,
-    UnaryExpression: UnaryExpression,
-    CallExpression: CallExpression,
-    MemberExpression: MemberExpression,
-    IndexExpression: IndexExpression,
-    StructLiteral: StructLiteral,
-    TypeExpression: TypeExpression,
-    Identifier: Identifier,
-    NumberLiteral: NumberLiteral,
-    FloatLiteral: FloatLiteral,
-    StringLiteral: StringLiteral,
-    BooleanLiteral: BooleanLiteral,
-    ArrayLiteral: ArrayLiteral,
-
-    pub fn position(self: Node) Position {
-        return switch (self) {
-            .ImportStatement => |s| s.position,
-            .StructStatement => |s| s.position,
-            .ExternStatement => |e| e.position(),
-            .FunctionStatement => |f| f.position,
-            .VariableStatement => |v| v.position,
-            .IfExpression => |i| i.position,
-            .ForStatement => |f| f.position,
-            .WhileStatement => |w| w.position,
-            .ReturnStatement => |r| r.position,
-            .ExpressionStatement => |e| e.position,
-            .BlockStatement => |b| b.position,
-            .BinaryExpression => |b| b.position,
-            .UnaryExpression => |u| u.position,
-            .CallExpression => |c| c.position,
-            .MemberExpression => |m| m.position,
-            .IndexExpression => |i| i.position,
-            .StructLiteral => |s| s.position,
-            .TypeExpression => |t| t.position,
-            .Identifier => |i| i.position,
-            .NumberLiteral => |n| n.position,
-            .FloatLiteral => |f| f.position,
-            .StringLiteral => |s| s.position,
-            .BooleanLiteral => |b| b.position,
-            .ArrayLiteral => |a| a.position,
-        };
-    }
-
-    pub fn get_type(self: Node) Type {
-        return switch (self) {
-            .BinaryExpression => |b| b.type,
-            .UnaryExpression => |u| u.type,
-            .CallExpression => |c| c.type,
-            .Identifier => |i| i.type,
-            .NumberLiteral => |n| n.type,
-            .FloatLiteral => |f| f.type,
-            .StringLiteral => |s| s.type,
-            .BooleanLiteral => |b| b.type,
-            .IndexExpression => |i| i.type,
-            .MemberExpression => |m| m.type,
-            .ExpressionStatement => |e| e.type,
-            .ArrayLiteral => |a| a.type,
-            .TypeExpression => |t| t.value,
-            else => .Void,
-        };
-    }
-
-    pub fn deinit(self: *Node) void {
-        switch (self.*) {
-            .ImportStatement => |*i| i.deinit(),
-            .FunctionStatement => |*f| f.deinit(),
-            .VariableStatement => |*v| v.deinit(),
-            .BlockStatement => |*b| b.deinit(),
-            .ReturnStatement => |*r| r.deinit(),
-            .ExpressionStatement => |*e| e.deinit(),
-            .BinaryExpression => |*b| b.deinit(),
-            .UnaryExpression => |*u| u.deinit(),
-            .StructStatement => |*s| s.deinit(),
-            .IfExpression => |*i| i.deinit(),
-            .ForStatement => |*f| f.deinit(),
-            .WhileStatement => |*w| w.deinit(),
-            .CallExpression => |*c| c.deinit(),
-            .MemberExpression => |*m| m.deinit(),
-            .IndexExpression => |*i| i.deinit(),
-            .StructLiteral => |*s| s.deinit(),
-            .ArrayLiteral => |*a| a.deinit(),
-            .TypeExpression => {},
-            .ExternStatement => |*e| {
-                switch (e.*) {
-                    .Function => |*f| f.deinit(),
-                    .Variable => |*v| v.type.deinit(),
-                }
-            },
-            else => {},
-        }
-    }
-
-    pub fn dump(self: Node, depth: usize) void {
-        switch (self) {
-            .ImportStatement => |s| s.dump(depth),
-            .StructStatement => |s| s.dump(depth),
-            .ExternStatement => |e| e.dump(depth),
-            .FunctionStatement => |f| f.dump(depth),
-            .VariableStatement => |v| v.dump(depth),
-            .IfExpression => |i| i.dump(depth),
-            .ForStatement => |f| f.dump(depth),
-            .WhileStatement => |w| w.dump(depth),
-            .ReturnStatement => |r| r.dump(depth),
-            .ExpressionStatement => |e| e.dump(depth),
-            .BlockStatement => |b| b.dump(depth),
-            .BinaryExpression => |b| b.dump(depth),
-            .UnaryExpression => |u| u.dump(depth),
-            .CallExpression => |c| c.dump(depth),
-            .MemberExpression => |m| m.dump(depth),
-            .IndexExpression => |i| i.dump(depth),
-            .StructLiteral => |s| s.dump(depth),
-            .TypeExpression => |t| t.dump(depth),
-            .Identifier => |i| i.dump(depth),
-            .NumberLiteral => |n| n.dump(depth),
-            .FloatLiteral => |f| f.dump(depth),
-            .StringLiteral => |s| s.dump(depth),
-            .BooleanLiteral => |b| b.dump(depth),
-            .ArrayLiteral => |a| a.dump(depth),
-        }
-    }
-};
-
-pub const Visibility = enum { Public, Private };
+const Visibility = symbol_zig.Visibility;
 
 pub const Identifier = struct {
     position: Position,
@@ -265,9 +131,9 @@ pub const StructLiteral = struct {
     allocator: std.mem.Allocator,
 
     position: Position,
-    type: Type = Type.unknown(),
+    type: ?type_zig.StructLiteralType = null,
 
-    @"struct": *Node,
+    name: Identifier,
     generics: std.ArrayListUnmanaged(GenericArgument),
     fields: std.ArrayListUnmanaged(StructLiteralField),
 
@@ -287,8 +153,14 @@ pub const StructLiteral = struct {
         std.debug.print("StructLiteral(\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
-        self.@"struct".dump(depth + 1);
+        self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
+        if (self.type) |@"type"| {
+            type_zig.print_indent(depth + 1);
+            std.debug.print("type: ", .{});
+            @"type".dump(depth + 1);
+            std.debug.print(",\n", .{});
+        }
 
         type_zig.print_indent(depth + 1);
         std.debug.print("fields: [", .{});
@@ -299,6 +171,22 @@ pub const StructLiteral = struct {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
                 field.dump(depth + 2);
+            }
+
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
+        }
+        std.debug.print("]\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("generics: [", .{});
+        if (self.generics.items.len > 0) {
+            std.debug.print("\n", .{});
+
+            for (self.generics.items, 0..) |generic, i| {
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
+                generic.dump(depth + 2);
             }
 
             std.debug.print("\n", .{});
@@ -330,6 +218,10 @@ pub const ArrayLiteral = struct {
 
     pub fn dump(self: ArrayLiteral, depth: usize) void {
         std.debug.print("ArrayLiteral(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("elements: [", .{});
         if (self.elements.items.len > 0) {
@@ -389,6 +281,10 @@ pub const BinaryExpression = struct {
     pub fn dump(self: BinaryExpression, depth: usize) void {
         std.debug.print("BinaryExpression(\n", .{});
         type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth + 1);
         std.debug.print("operator: ", .{});
         self.operator.dump();
         std.debug.print(",\n", .{});
@@ -425,83 +321,16 @@ pub const UnaryExpression = struct {
     pub fn dump(self: UnaryExpression, depth: usize) void {
         std.debug.print("UnaryExpression(\n", .{});
         type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth + 1);
         std.debug.print("operator: ", .{});
         self.operator.dump();
         std.debug.print(",\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("operand: ", .{});
         self.operand.dump(depth + 1);
-        std.debug.print(",\n", .{});
-        type_zig.print_indent(depth);
-        std.debug.print(")", .{});
-    }
-};
-
-pub const GenericArgument = struct {
-    position: Position,
-
-    name: ?Identifier,
-    type: TypeExpression,
-
-    pub fn deinit(self: *GenericArgument) void {
-        if (self.name) |*name| {
-            name.deinit();
-        }
-
-        self.type.deinit();
-    }
-
-    pub fn dump(self: GenericArgument, depth: usize) void {
-        std.debug.print("GenericArgument(\n", .{});
-        type_zig.print_indent(depth + 1);
-        if (self.name) |name| {
-            std.debug.print("name: ", .{});
-            name.dump(depth + 1);
-        } else {
-            std.debug.print("name: null", .{});
-        }
-        std.debug.print(",\n", .{});
-
-        type_zig.print_indent(depth + 1);
-        std.debug.print("type: ", .{});
-        self.type.dump(depth + 1);
-        std.debug.print(",\n", .{});
-
-        type_zig.print_indent(depth);
-        std.debug.print(")", .{});
-    }
-};
-
-pub const Argument = struct {
-    allocator: std.mem.Allocator,
-
-    position: Position,
-
-    name: ?Identifier,
-    value: *Node,
-
-    pub fn deinit(self: *Argument) void {
-        if (self.name) |*name| {
-            name.deinit();
-        }
-
-        self.value.deinit();
-        self.allocator.destroy(self.value);
-    }
-
-    pub fn dump(self: Argument, depth: usize) void {
-        std.debug.print("Argument(\n", .{});
-        type_zig.print_indent(depth + 1);
-        if (self.name) |name| {
-            std.debug.print("name: ", .{});
-            name.dump(depth + 1);
-        } else {
-            std.debug.print("name: null", .{});
-        }
-        std.debug.print(",\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("value: ", .{});
-        self.value.dump(depth + 1);
         std.debug.print(",\n", .{});
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
@@ -535,6 +364,10 @@ pub const CallExpression = struct {
 
     pub fn dump(self: CallExpression, depth: usize) void {
         std.debug.print("CallExpression(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("callee: ", .{});
         self.callee.dump(depth + 1);
@@ -592,6 +425,10 @@ pub const MemberExpression = struct {
     pub fn dump(self: MemberExpression, depth: usize) void {
         std.debug.print("MemberExpression(\n", .{});
         type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth + 1);
         std.debug.print("object: ", .{});
         self.object.dump(depth + 1);
         std.debug.print(",\n", .{});
@@ -624,6 +461,10 @@ pub const IndexExpression = struct {
     pub fn dump(self: IndexExpression, depth: usize) void {
         std.debug.print("IndexExpression(\n", .{});
         type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth + 1);
         std.debug.print("array: ", .{});
         self.array.dump(depth + 1);
         std.debug.print(",\n", .{});
@@ -652,9 +493,13 @@ pub const ExpressionStatement = struct {
     pub fn dump(self: ExpressionStatement, depth: usize) void {
         std.debug.print("ExpressionStatement(\n", .{});
         type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
+        type_zig.print_indent(depth + 1);
         std.debug.print("expression: ", .{});
         self.expression.dump(depth + 1);
-        std.debug.print(",\n", .{});
+        std.debug.print("\n", .{});
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -681,6 +526,10 @@ pub const BlockStatement = struct {
 
     pub fn dump(self: BlockStatement, depth: usize) void {
         std.debug.print("BlockStatement(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("statements: [", .{});
         if (self.statements.items.len > 0) {
@@ -813,6 +662,7 @@ pub const StructStatement = struct {
     allocator: std.mem.Allocator,
 
     position: Position,
+    type: ?type_zig.StructType = null,
 
     visibility: Visibility,
 
@@ -839,6 +689,12 @@ pub const StructStatement = struct {
         std.debug.print("StructStatement(\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        if (self.type) |@"type"| {
+            @"type".dump(depth + 1);
+        }
+        std.debug.print(",\n", .{});
 
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
@@ -867,6 +723,22 @@ pub const StructStatement = struct {
         }
         std.debug.print("]\n", .{});
 
+        type_zig.print_indent(depth + 1);
+        std.debug.print("generics: [", .{});
+        if (self.generics.items.len > 0) {
+            std.debug.print("\n", .{});
+
+            for (self.generics.items, 0..) |generic, i| {
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
+                generic.dump(depth + 2);
+            }
+
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
+        }
+        std.debug.print("]\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -885,36 +757,6 @@ pub const StructStatementField = struct {
 
     pub fn dump(self: StructStatementField, depth: usize) void {
         std.debug.print("StructField(\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("name: ", .{});
-        self.name.dump(depth + 1);
-        std.debug.print(",\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("type: ", .{});
-        self.type.dump(depth + 1);
-        std.debug.print("\n", .{});
-        type_zig.print_indent(depth);
-        std.debug.print(")", .{});
-    }
-};
-
-pub const Parameter = struct {
-    position: Position,
-
-    name: Identifier,
-    type: TypeExpression,
-
-    is_variadic: bool = false,
-
-    pub fn deinit(self: *Parameter) void {
-        self.name.deinit();
-        self.type.deinit();
-    }
-
-    pub fn dump(self: Parameter, depth: usize) void {
-        std.debug.print("FunctionParameter(\n", .{});
-        type_zig.print_indent(depth + 1);
-        if (self.is_variadic) std.debug.print("variadic: true,\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
@@ -999,34 +841,6 @@ pub const FunctionProto = struct {
         self.return_type.dump(depth + 1);
         std.debug.print(",\n", .{});
 
-        type_zig.print_indent(depth);
-        std.debug.print(")", .{});
-    }
-};
-
-pub const GenericParameter = struct {
-    position: Position,
-
-    name: Identifier,
-    constraint: ?TypeExpression = null,
-
-    pub fn deinit(self: *GenericParameter) void {
-        self.name.deinit();
-        if (self.constraint) |*c| c.deinit();
-    }
-
-    pub fn dump(self: GenericParameter, depth: usize) void {
-        std.debug.print("GenericParameter(\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("name: ", .{});
-        self.name.dump(depth + 1);
-        if (self.constraint) |c| {
-            std.debug.print(",\n", .{});
-            type_zig.print_indent(depth + 1);
-            std.debug.print("constraint: ", .{});
-            c.dump(depth + 1);
-        }
-        std.debug.print(",\n", .{});
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -1137,6 +951,10 @@ pub const IfExpression = struct {
 
     pub fn dump(self: IfExpression, depth: usize) void {
         std.debug.print("IfExpression(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("condition: ", .{});
         self.condition.dump(depth + 1);
@@ -1264,10 +1082,277 @@ pub const ReturnStatement = struct {
     pub fn dump(self: ReturnStatement, depth: usize) void {
         std.debug.print("ReturnStatement(\n", .{});
         type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("value: ", .{});
+        self.value.dump(depth + 1);
+        std.debug.print("\n", .{});
+        type_zig.print_indent(depth);
+        std.debug.print(")", .{});
+    }
+};
+
+pub const GenericParameter = struct {
+    position: Position,
+
+    name: Identifier,
+    constraint: ?TypeExpression = null,
+
+    pub fn deinit(self: *GenericParameter) void {
+        self.name.deinit();
+        if (self.constraint) |*c| c.deinit();
+    }
+
+    pub fn dump(self: GenericParameter, depth: usize) void {
+        std.debug.print("GenericParameter(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("name: ", .{});
+        self.name.dump(depth + 1);
+        if (self.constraint) |c| {
+            std.debug.print(",\n", .{});
+            type_zig.print_indent(depth + 1);
+            std.debug.print("constraint: ", .{});
+            c.dump(depth + 1);
+        }
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth);
+        std.debug.print(")", .{});
+    }
+};
+
+pub const GenericArgument = struct {
+    position: Position,
+
+    name: ?Identifier,
+    type: TypeExpression,
+
+    pub fn deinit(self: *GenericArgument) void {
+        if (self.name) |*name| {
+            name.deinit();
+        }
+
+        self.type.deinit();
+    }
+
+    pub fn dump(self: GenericArgument, depth: usize) void {
+        std.debug.print("GenericArgument(\n", .{});
+        type_zig.print_indent(depth + 1);
+        if (self.name) |name| {
+            std.debug.print("name: ", .{});
+            name.dump(depth + 1);
+        } else {
+            std.debug.print("name: null", .{});
+        }
+        std.debug.print(",\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
+
+        type_zig.print_indent(depth);
+        std.debug.print(")", .{});
+    }
+};
+
+pub const Parameter = struct {
+    position: Position,
+
+    name: Identifier,
+    type: TypeExpression,
+
+    is_variadic: bool = false,
+
+    pub fn deinit(self: *Parameter) void {
+        self.name.deinit();
+        self.type.deinit();
+    }
+
+    pub fn dump(self: Parameter, depth: usize) void {
+        std.debug.print("Parameter(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("is_variadic: {s},\n", .{if (self.is_variadic) "true" else "false"});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("name: ", .{});
+        self.name.dump(depth + 1);
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
+        type_zig.print_indent(depth);
+        std.debug.print(")", .{});
+    }
+};
+
+pub const Argument = struct {
+    allocator: std.mem.Allocator,
+
+    position: Position,
+
+    name: ?Identifier,
+    value: *Node,
+
+    pub fn deinit(self: *Argument) void {
+        if (self.name) |*name| {
+            name.deinit();
+        }
+
+        self.value.deinit();
+        self.allocator.destroy(self.value);
+    }
+
+    pub fn dump(self: Argument, depth: usize) void {
+        std.debug.print("Argument(\n", .{});
+        type_zig.print_indent(depth + 1);
+        if (self.name) |name| {
+            std.debug.print("name: ", .{});
+            name.dump(depth + 1);
+        } else {
+            std.debug.print("name: null", .{});
+        }
+        std.debug.print(",\n", .{});
+        type_zig.print_indent(depth + 1);
         std.debug.print("value: ", .{});
         self.value.dump(depth + 1);
         std.debug.print(",\n", .{});
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
+    }
+};
+
+pub const Node = union(enum) {
+    ImportStatement: ImportStatement,
+    ExternStatement: ExternStatement,
+    StructStatement: StructStatement,
+    FunctionStatement: FunctionStatement,
+    VariableStatement: VariableStatement,
+    IfExpression: IfExpression,
+    ForStatement: ForStatement,
+    WhileStatement: WhileStatement,
+    ReturnStatement: ReturnStatement,
+    ExpressionStatement: ExpressionStatement,
+    BlockStatement: BlockStatement,
+    BinaryExpression: BinaryExpression,
+    UnaryExpression: UnaryExpression,
+    CallExpression: CallExpression,
+    MemberExpression: MemberExpression,
+    IndexExpression: IndexExpression,
+    StructLiteral: StructLiteral,
+    TypeExpression: TypeExpression,
+    Identifier: Identifier,
+    NumberLiteral: NumberLiteral,
+    FloatLiteral: FloatLiteral,
+    StringLiteral: StringLiteral,
+    BooleanLiteral: BooleanLiteral,
+    ArrayLiteral: ArrayLiteral,
+
+    pub fn position(self: Node) Position {
+        return switch (self) {
+            .ImportStatement => |s| s.position,
+            .StructStatement => |s| s.position,
+            .ExternStatement => |e| e.position(),
+            .FunctionStatement => |f| f.position,
+            .VariableStatement => |v| v.position,
+            .IfExpression => |i| i.position,
+            .ForStatement => |f| f.position,
+            .WhileStatement => |w| w.position,
+            .ReturnStatement => |r| r.position,
+            .ExpressionStatement => |e| e.position,
+            .BlockStatement => |b| b.position,
+            .BinaryExpression => |b| b.position,
+            .UnaryExpression => |u| u.position,
+            .CallExpression => |c| c.position,
+            .MemberExpression => |m| m.position,
+            .IndexExpression => |i| i.position,
+            .StructLiteral => |s| s.position,
+            .TypeExpression => |t| t.position,
+            .Identifier => |i| i.position,
+            .NumberLiteral => |n| n.position,
+            .FloatLiteral => |f| f.position,
+            .StringLiteral => |s| s.position,
+            .BooleanLiteral => |b| b.position,
+            .ArrayLiteral => |a| a.position,
+        };
+    }
+
+    pub fn get_type(self: Node) Type {
+        return switch (self) {
+            .BinaryExpression => |b| b.type,
+            .UnaryExpression => |u| u.type,
+            .CallExpression => |c| c.type,
+            .Identifier => |i| i.type,
+            .NumberLiteral => |n| n.type,
+            .FloatLiteral => |f| f.type,
+            .StringLiteral => |s| s.type,
+            .BooleanLiteral => |b| b.type,
+            .IndexExpression => |i| i.type,
+            .MemberExpression => |m| m.type,
+            .ExpressionStatement => |e| e.type,
+            .ArrayLiteral => |a| a.type,
+            .TypeExpression => |t| t.value,
+            else => .Void,
+        };
+    }
+
+    pub fn deinit(self: *Node) void {
+        switch (self.*) {
+            .ImportStatement => |*i| i.deinit(),
+            .FunctionStatement => |*f| f.deinit(),
+            .VariableStatement => |*v| v.deinit(),
+            .BlockStatement => |*b| b.deinit(),
+            .ReturnStatement => |*r| r.deinit(),
+            .ExpressionStatement => |*e| e.deinit(),
+            .BinaryExpression => |*b| b.deinit(),
+            .UnaryExpression => |*u| u.deinit(),
+            .StructStatement => |*s| s.deinit(),
+            .IfExpression => |*i| i.deinit(),
+            .ForStatement => |*f| f.deinit(),
+            .WhileStatement => |*w| w.deinit(),
+            .CallExpression => |*c| c.deinit(),
+            .MemberExpression => |*m| m.deinit(),
+            .IndexExpression => |*i| i.deinit(),
+            .StructLiteral => |*s| s.deinit(),
+            .ArrayLiteral => |*a| a.deinit(),
+            .TypeExpression => {},
+            .ExternStatement => |*e| {
+                switch (e.*) {
+                    .Function => |*f| f.deinit(),
+                    .Variable => |*v| v.type.deinit(),
+                }
+            },
+            else => {},
+        }
+    }
+
+    pub fn dump(self: Node, depth: usize) void {
+        switch (self) {
+            .ImportStatement => |s| s.dump(depth),
+            .StructStatement => |s| s.dump(depth),
+            .ExternStatement => |e| e.dump(depth),
+            .FunctionStatement => |f| f.dump(depth),
+            .VariableStatement => |v| v.dump(depth),
+            .IfExpression => |i| i.dump(depth),
+            .ForStatement => |f| f.dump(depth),
+            .WhileStatement => |w| w.dump(depth),
+            .ReturnStatement => |r| r.dump(depth),
+            .ExpressionStatement => |e| e.dump(depth),
+            .BlockStatement => |b| b.dump(depth),
+            .BinaryExpression => |b| b.dump(depth),
+            .UnaryExpression => |u| u.dump(depth),
+            .CallExpression => |c| c.dump(depth),
+            .MemberExpression => |m| m.dump(depth),
+            .IndexExpression => |i| i.dump(depth),
+            .StructLiteral => |s| s.dump(depth),
+            .TypeExpression => |t| t.dump(depth),
+            .Identifier => |i| i.dump(depth),
+            .NumberLiteral => |n| n.dump(depth),
+            .FloatLiteral => |f| f.dump(depth),
+            .StringLiteral => |s| s.dump(depth),
+            .BooleanLiteral => |b| b.dump(depth),
+            .ArrayLiteral => |a| a.dump(depth),
+        }
     }
 };

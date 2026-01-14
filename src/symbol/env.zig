@@ -10,7 +10,7 @@ const TypeSymbol = symbol_zig.TypeSymbol;
 const Scope = scope_zig.Scope;
 const VariableSymbol = symbol_zig.VariableSymbol;
 const StringContext = std.hash_map.StringContext;
-const Visibility = node_zig.Visibility;
+const Visibility = symbol_zig.Visibility;
 const Type = type_zig.Type;
 
 pub const Env = struct {
@@ -35,8 +35,7 @@ pub const Env = struct {
     }
 
     pub fn deinit(self: *Env) void {
-        self.current_scope.deinit();
-        self.allocator.destroy(self.current_scope);
+        _ = self;
     }
 
     pub fn set_current_scope(self: *Env, scope: ?*Scope) void {
@@ -46,7 +45,7 @@ pub const Env = struct {
     fn builtin_types(self: *Env) !void {
         const pairs = [_]struct { name: []const u8, t: Type }{
             .{ .name = "string", .t = Type{ .String = {} } },
-            .{ .name = "bool", .t = Type{ .Boolean = {} } },
+            .{ .name = "boolean", .t = Type{ .Boolean = {} } },
             .{ .name = "void", .t = Type{ .Void = {} } },
             .{ .name = "i8", .t = Type{ .Integer = .{ .is_unsigned = false, .size = 8 } } },
             .{ .name = "i16", .t = Type{ .Integer = .{ .is_unsigned = false, .size = 16 } } },

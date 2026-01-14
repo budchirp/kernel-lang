@@ -64,6 +64,8 @@ pub const Compiler = struct {
         const module_name = try self.allocator.dupeZ(u8, std.fs.path.basename(source_path));
         defer self.allocator.free(module_name);
 
+        program.dump(0);
+
         var engine = try CodegenEngine.init(self.allocator, .llvm, module_name, context, &program);
         defer engine.deinit();
 

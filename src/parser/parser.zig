@@ -13,7 +13,9 @@ const env_zig = @import("../symbol/env.zig");
 const scope_zig = @import("../symbol/scope.zig");
 const context_zig = @import("../compiler/context.zig");
 const memory_zig = @import("../utils/memory.zig");
+const symbol_zig = @import("../symbol/symbol.zig");
 
+const Visibility = symbol_zig.Visibility;
 const Lexer = lexer_zig.Lexer;
 const Token = token_zig.Token;
 const Env = env_zig.Env;
@@ -34,7 +36,6 @@ const FloatLiteral = node_zig.FloatLiteral;
 const StringLiteral = node_zig.StringLiteral;
 const BooleanLiteral = node_zig.BooleanLiteral;
 const TypeExpression = node_zig.TypeExpression;
-const Visibility = node_zig.Visibility;
 const ReturnStatement = node_zig.ReturnStatement;
 const StructStatement = node_zig.StructStatement;
 const StructStatementField = node_zig.StructStatementField;
@@ -172,7 +173,6 @@ pub const Parser = struct {
             .Return => self.parse_return_statement(),
             .Struct => self.parse_struct_statement(visibility),
             .Extern => self.parse_extern_statement(visibility),
-            .If => self.parse_if_expression(),
             .While => self.parse_while_statement(),
             .For => self.parse_for_statement(),
             .Identifier => self.parse_expression_statement(),
@@ -492,10 +492,10 @@ pub const Parser = struct {
         return left;
     }
 
-    fn parse_call_expression(self: *Parser, callee: Node) ParserError!Node {
+    fn parse_call_expression(self: *Parser, callee: Node, existing_generics: ?std.ArrayListUnmanaged(GenericArgument)) ParserError!Node {
         const position = self.current_token.position;
 
-        const generics = try self.parse_generic_arguments();
+        const generics = existing_generics orelse try self.parse_generic_arguments();
 
         try self.expect_token(TokenType.LeftParen);
 
@@ -574,20 +574,33 @@ pub const Parser = struct {
         var left = try self.parse_primary_expression();
 
         while (true) {
-            if (self.current_token.type == TokenType.LeftParen or self.current_token.type == TokenType.LessThan) {
-                if (self.current_token.type == TokenType.LessThan) {
-                    if (left != .Identifier) {
-                        break;
-                    }
+            if (self.current_token.type == TokenType.LeftParen) {
+                left = try self.parse_call_expression(left, null);
+            } else if (self.current_token.type == TokenType.LessThan) {
+                if (left != .Identifier) {
+                    break;
                 }
 
-                left = try self.parse_call_expression(left);
+                const generics = try self.parse_generic_arguments();
+
+                if (self.current_token.type == TokenType.LeftBrace) {
+                    left = try self.parse_struct_literal(left.Identifier, generics);
+                } else if (self.current_token.type == TokenType.LeftParen) {
+                    left = try self.parse_call_expression(left, generics);
+                } else {
+                    self.context.logger.err(
+                        ErrorKind.ParserError,
+                        self.current_token.position,
+                        "expected '(' or '{' after generic arguments",
+                    );
+                    return error.UnexpectedToken;
+                }
             } else if (self.current_token.type == TokenType.Dot) {
                 left = try self.parse_member_expression(left);
             } else if (self.current_token.type == TokenType.LeftBracket) {
                 left = try self.parse_index_expression(left);
             } else if (self.current_token.type == TokenType.LeftBrace) {
-                left = try self.parse_struct_literal(left);
+                left = try self.parse_struct_literal(left.Identifier, null);
             } else if (self.current_token.type == TokenType.Increment or self.current_token.type == TokenType.Decrement) {
                 const operator = self.current_token;
 
@@ -839,8 +852,8 @@ pub const Parser = struct {
         };
     }
 
-    fn parse_struct_literal(self: *Parser, @"struct": Node) ParserError!Node {
-        const generics = try self.parse_generic_arguments();
+    fn parse_struct_literal(self: *Parser, name: Identifier, existing_generics: ?std.ArrayListUnmanaged(GenericArgument)) ParserError!Node {
+        const generics = existing_generics orelse try self.parse_generic_arguments();
 
         try self.expect_token(TokenType.LeftBrace);
 
@@ -872,8 +885,8 @@ pub const Parser = struct {
         return Node{
             .StructLiteral = StructLiteral{
                 .allocator = self.allocator,
-                .position = @"struct".position(),
-                .@"struct" = try memory.create(self.allocator, Node, @"struct"),
+                .position = name.position,
+                .name = name,
                 .generics = generics,
                 .fields = fields,
             },
@@ -943,25 +956,39 @@ pub const Parser = struct {
         if (self.current_token.type == TokenType.LessThan) {
             self.next_token();
 
-            var generics = std.ArrayListUnmanaged(Type){};
+            var generics = std.ArrayListUnmanaged(type_zig.GenericArgumentType){};
+            errdefer generics.deinit(self.allocator);
+
             while (self.current_token.type != TokenType.GreaterThan) {
-                self.next_token();
+                if (generics.items.len > 0) {
+                    try self.expect_token(TokenType.Comma);
+                }
 
                 const argument = try self.parse_type_expression();
-                try generics.append(self.allocator, argument.value);
+                try generics.append(self.allocator, type_zig.GenericArgumentType{
+                    .type = try memory.create(self.allocator, Type, argument.value),
+                });
 
-                if (self.current_token.type == TokenType.Comma) {
-                    self.next_token();
-                } else if (self.current_token.type != TokenType.GreaterThan) {
-                    return error.UnexpectedToken;
+                if (self.current_token.type == TokenType.GreaterThan) {
+                    break;
                 }
             }
 
             try self.expect_token(TokenType.GreaterThan);
 
             switch (base_type) {
-                .Struct => |_| {},
-                else => {},
+                .Named => |*named| {
+                    named.generics = try generics.toOwnedSlice(self.allocator);
+                },
+                else => {
+                    for (generics.items) |*generic| {
+                        var generic_type = @constCast(generic.type);
+                        generic_type.deinit(self.allocator);
+                        self.allocator.destroy(generic_type);
+                    }
+
+                    generics.deinit(self.allocator);
+                },
             }
         }
 

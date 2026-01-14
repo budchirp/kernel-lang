@@ -63,6 +63,10 @@ pub const Scope = struct {
         }
         self.functions.deinit(self.allocator);
 
+        var type_iter = self.types.iterator();
+        while (type_iter.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
         self.types.deinit(self.allocator);
 
         var var_iter = self.variables.iterator();
@@ -74,6 +78,16 @@ pub const Scope = struct {
 
     pub fn is_global(self: *Scope) bool {
         return self.parent == null;
+    }
+
+    pub fn is_function(self: *Scope) bool {
+        var scope: ?*Scope = self;
+        while (scope) |s| {
+            if (s.type == .Function) return true;
+            scope = s.parent;
+        }
+
+        return false;
     }
 
     fn function_equal(a: FunctionSymbol, b: FunctionSymbol) bool {
@@ -178,22 +192,60 @@ pub const Scope = struct {
         std.debug.print("Scope(\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("name: '{s}',\n", .{self.name});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("variables: [", .{});
-        if (self.variables.size > 0) {
-            type_zig.print_indent(depth + 1);
-            std.debug.print("\n", .{});
 
-            var var_iter = self.variables.iterator();
+        type_zig.print_indent(depth + 1);
+        std.debug.print("types: [", .{});
+        if (self.types.size > 0) {
+            std.debug.print("\n", .{});
+            var iter = self.types.iterator();
             var i: usize = 0;
-            while (var_iter.next()) |entry| {
+            while (iter.next()) |entry| {
                 if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
                 entry.value_ptr.dump(depth + 2);
                 i += 1;
             }
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
         }
+        std.debug.print("],\n", .{});
 
+        type_zig.print_indent(depth + 1);
+        std.debug.print("functions: [", .{});
+        if (self.functions.size > 0) {
+            std.debug.print("\n", .{});
+            var iter = self.functions.iterator();
+            var i: usize = 0;
+            while (iter.next()) |entry| {
+                for (entry.value_ptr.items) |func| {
+                    if (i > 0) std.debug.print(",\n", .{});
+                    type_zig.print_indent(depth + 2);
+                    func.dump(depth + 2);
+                    i += 1;
+                }
+            }
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
+        }
+        std.debug.print("],\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("variables: [", .{});
+        if (self.variables.size > 0) {
+            std.debug.print("\n", .{});
+            var iter = self.variables.iterator();
+            var i: usize = 0;
+            while (iter.next()) |entry| {
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
+                entry.value_ptr.dump(depth + 2);
+                i += 1;
+            }
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
+        }
         std.debug.print("]\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }

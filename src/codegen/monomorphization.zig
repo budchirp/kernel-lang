@@ -5,6 +5,7 @@ const type_zig = @import("../types/type.zig");
 
 const Type = type_zig.Type;
 const FunctionStatement = node_zig.FunctionStatement;
+const StructStatement = node_zig.StructStatement;
 
 pub const MonoKey = struct {
     name: []const u8,
@@ -48,14 +49,17 @@ pub const MonomorphizationCache = struct {
 
     specializations: std.HashMap(MonoKey, []const u8, MonoKeyContext, std.hash_map.default_max_load_percentage),
 
+    structs: std.StringHashMap(*StructStatement),
     functions: std.StringHashMap(*FunctionStatement),
+
     generated: std.StringHashMap(void),
 
     pub fn init(allocator: std.mem.Allocator) MonomorphizationCache {
         return MonomorphizationCache{
             .allocator = allocator,
-            .functions = std.StringHashMap(*FunctionStatement).init(allocator),
             .specializations = std.HashMap(MonoKey, []const u8, MonoKeyContext, std.hash_map.default_max_load_percentage).init(allocator),
+            .structs = std.StringHashMap(*StructStatement).init(allocator),
+            .functions = std.StringHashMap(*FunctionStatement).init(allocator),
             .generated = std.StringHashMap(void).init(allocator),
         };
     }
@@ -69,40 +73,53 @@ pub const MonomorphizationCache = struct {
 
         self.specializations.deinit();
         self.functions.deinit();
+        self.structs.deinit();
         self.generated.deinit();
     }
 
-    pub fn register_generic(self: *MonomorphizationCache, name: []const u8, statement: *FunctionStatement) !void {
+    pub fn register_function(self: *MonomorphizationCache, name: []const u8, statement: *FunctionStatement) !void {
         try self.functions.put(name, statement);
     }
 
-    pub fn is_generic(self: *MonomorphizationCache, name: []const u8) bool {
+    pub fn register_struct(self: *MonomorphizationCache, name: []const u8, statement: *StructStatement) !void {
+        try self.structs.put(name, statement);
+    }
+
+    pub fn is_generic_function(self: *MonomorphizationCache, name: []const u8) bool {
         return self.functions.contains(name);
     }
 
-    pub fn get_generic(self: *MonomorphizationCache, name: []const u8) ?*FunctionStatement {
+    pub fn is_generic_struct(self: *MonomorphizationCache, name: []const u8) bool {
+        return self.structs.contains(name);
+    }
+
+    pub fn get_function(self: *MonomorphizationCache, name: []const u8) ?*FunctionStatement {
         return self.functions.get(name);
     }
 
-    pub fn mark_generated(self: *MonomorphizationCache, mangled_name: []const u8) !void {
-        try self.generated.put(mangled_name, {});
+    pub fn get_struct(self: *MonomorphizationCache, name: []const u8) ?*StructStatement {
+        return self.structs.get(name);
+    }
+
+    pub fn mark_generated(self: *MonomorphizationCache, name: []const u8) !void {
+        try self.generated.put(name, {});
     }
 
     pub fn get_or_create(
         self: *MonomorphizationCache,
         name: []const u8,
-        types: []const Type,
+        generic_arguments: []const Type,
     ) !struct { name: []const u8, is_generated: bool } {
-        const key = MonoKey{ .name = name, .types = types };
+        const key = MonoKey{ .name = name, .types = generic_arguments };
 
         if (self.specializations.get(key)) |mangled| {
             return .{ .name = mangled, .is_generated = true };
         }
 
-        const mangled = try mangle(self.allocator, name, types);
+        const mangled = try mangle(self.allocator, name, generic_arguments);
 
-        const types_copy = try self.allocator.alloc(Type, types.len);
-        @memcpy(types_copy, types);
+        const types_copy = try self.allocator.alloc(Type, generic_arguments.len);
+        @memcpy(types_copy, generic_arguments);
 
         const stored_key = MonoKey{ .name = name, .types = types_copy };
         try self.specializations.put(stored_key, mangled);

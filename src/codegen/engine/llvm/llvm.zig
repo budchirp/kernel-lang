@@ -8,6 +8,7 @@ const program_zig = @import("../../../ast/program.zig");
 const type_zig = @import("../../../types/type.zig");
 const compiler_zig = @import("../../../compiler/context.zig");
 const symbol_zig = @import("../../../symbol/symbol.zig");
+const scope_zig = @import("../../../symbol/scope.zig");
 const mono_zig = @import("../../monomorphization.zig");
 const memory_zig = @import("../../../utils/memory.zig");
 
@@ -31,101 +32,6 @@ const Identifier = node_zig.Identifier;
 const ArrayLiteral = node_zig.ArrayLiteral;
 const IndexExpression = node_zig.IndexExpression;
 
-const LLVMConverter = struct {
-    allocator: std.mem.Allocator,
-
-    context: LLVMCodegenContext,
-    program: *Program,
-
-    substitutions: ?std.StringHashMap(Type) = null,
-
-    pub fn from_type(self: *LLVMConverter, @"type": Type) !c.LLVMTypeRef {
-        const resolved_type = if (self.substitutions) |substitutions|
-            self.apply_substitutions(@"type", substitutions)
-        else
-            @"type";
-
-        switch (resolved_type) {
-            .Integer => |integer| {
-                return switch (integer.size) {
-                    8 => c.LLVMInt8TypeInContext(self.context.llvm),
-                    16 => c.LLVMInt16TypeInContext(self.context.llvm),
-                    32 => c.LLVMInt32TypeInContext(self.context.llvm),
-                    64 => c.LLVMInt64TypeInContext(self.context.llvm),
-                    else => error.InvalidType,
-                };
-            },
-            .Float => |float| {
-                return switch (float.size) {
-                    32 => c.LLVMFloatTypeInContext(self.context.llvm),
-                    64 => c.LLVMDoubleTypeInContext(self.context.llvm),
-                    else => error.InvalidType,
-                };
-            },
-            .Boolean => return c.LLVMInt1TypeInContext(self.context.llvm),
-            .String => return c.LLVMPointerType(c.LLVMInt8TypeInContext(self.context.llvm), 0),
-            .Array => |array| {
-                if (array.size) |size| {
-                    return c.LLVMArrayType(try self.from_type(array.child.*), @intCast(size));
-                } else {
-                    return c.LLVMPointerType(try self.from_type(array.child.*), 0);
-                }
-            },
-            .Pointer => |pointer| return c.LLVMPointerType(try self.from_type(pointer.child.*), 0),
-            .Function => |function| {
-                var parameters = std.ArrayListUnmanaged(c.LLVMTypeRef){};
-                defer parameters.deinit(self.allocator);
-
-                const param_count = if (function.is_variadic and function.parameters.len > 0) function.parameters.len - 1 else function.parameters.len;
-                for (function.parameters[0..param_count]) |parameter| {
-                    try parameters.append(self.allocator, try self.from_type(parameter.type.*));
-                }
-
-                const owned_parameters = try parameters.toOwnedSlice(self.allocator);
-                defer self.allocator.free(owned_parameters);
-
-                return c.LLVMFunctionType(try self.from_type(function.return_type.*), owned_parameters.ptr, @intCast(owned_parameters.len), @intFromBool(function.is_variadic));
-            },
-            .Struct => |@"struct"| {
-                var fields = std.ArrayListUnmanaged(c.LLVMTypeRef){};
-                defer fields.deinit(self.allocator);
-
-                for (@"struct".fields) |field| {
-                    try fields.append(self.allocator, try self.from_type(field.type.*));
-                }
-
-                const owned_fields = try fields.toOwnedSlice(self.allocator);
-                defer self.allocator.free(owned_fields);
-
-                return c.LLVMStructTypeInContext(self.context.llvm, owned_fields.ptr, @intCast(owned_fields.len), 0);
-            },
-            .Named => |named| {
-                if (self.substitutions) |substitutions| {
-                    if (substitutions.get(named.name)) |substituted| {
-                        return self.from_type(substituted);
-                    }
-                }
-
-                if (self.program.env.current_scope.lookup_type(named.name)) |symbol| {
-                    return self.from_type(symbol.type);
-                }
-
-                return c.LLVMPointerType(c.LLVMInt8TypeInContext(self.context.llvm), 0);
-            },
-            .Void => return c.LLVMVoidTypeInContext(self.context.llvm),
-            else => return error.InvalidType,
-        }
-    }
-
-    fn apply_substitutions(self: *LLVMConverter, @"type": Type, substitutions: std.StringHashMap(Type)) Type {
-        _ = self;
-        return switch (@"type") {
-            .Named => |named| substitutions.get(named.name) orelse @"type",
-            else => @"type",
-        };
-    }
-};
-
 pub const CodegenError = error{
     InvalidType,
     OutOfMemory,
@@ -136,6 +42,7 @@ pub const CodegenError = error{
 pub const CodegenResultContext = union(enum) {
     void: void,
     function: FunctionSymbol,
+    @"struct": c.LLVMTypeRef,
 };
 
 pub const CodegenResult = struct {
@@ -154,28 +61,124 @@ pub const LLVMCodegen = struct {
     context: CompilerContext,
     llvm_context: LLVMCodegenContext,
 
-    converter: LLVMConverter,
-
     program: *Program,
 
     variables: std.StringHashMap(c.LLVMValueRef),
 
     mono_cache: MonomorphizationCache,
+    substitutions: ?std.StringHashMap(Type) = null,
+
+    pub fn to_llvm_type(self: *LLVMCodegen, @"type": Type) CodegenError!c.LLVMTypeRef {
+        switch (self.resolve_type(@"type")) {
+            .Integer => |integer| {
+                return switch (integer.size) {
+                    8 => c.LLVMInt8TypeInContext(self.llvm_context.llvm),
+                    16 => c.LLVMInt16TypeInContext(self.llvm_context.llvm),
+                    32 => c.LLVMInt32TypeInContext(self.llvm_context.llvm),
+                    64 => c.LLVMInt64TypeInContext(self.llvm_context.llvm),
+                    else => error.InvalidType,
+                };
+            },
+            .Float => |float| {
+                return switch (float.size) {
+                    32 => c.LLVMFloatTypeInContext(self.llvm_context.llvm),
+                    64 => c.LLVMDoubleTypeInContext(self.llvm_context.llvm),
+                    else => error.InvalidType,
+                };
+            },
+            .Boolean => return c.LLVMInt1TypeInContext(self.llvm_context.llvm),
+            .String => return c.LLVMPointerType(c.LLVMInt8TypeInContext(self.llvm_context.llvm), 0),
+            .Array => |array| {
+                if (array.size) |size| {
+                    return c.LLVMArrayType(try self.to_llvm_type(array.child.*), @intCast(size));
+                } else {
+                    return c.LLVMPointerType(try self.to_llvm_type(array.child.*), 0);
+                }
+            },
+            .Pointer => |pointer| return c.LLVMPointerType(try self.to_llvm_type(pointer.child.*), 0),
+            .Function => |function| {
+                var parameters = std.ArrayListUnmanaged(c.LLVMTypeRef){};
+                defer parameters.deinit(self.allocator);
+
+                const param_count = if (function.is_variadic and function.parameters.len > 0) function.parameters.len - 1 else function.parameters.len;
+                for (function.parameters[0..param_count]) |parameter| {
+                    try parameters.append(self.allocator, try self.to_llvm_type(parameter.type.*));
+                }
+
+                const owned_parameters = try parameters.toOwnedSlice(self.allocator);
+                defer self.allocator.free(owned_parameters);
+
+                return c.LLVMFunctionType(try self.to_llvm_type(function.return_type.*), owned_parameters.ptr, @intCast(owned_parameters.len), @intFromBool(function.is_variadic));
+            },
+            .Struct => |@"struct"| {
+                const name_z = try self.allocator.dupeZ(u8, @"struct".name);
+                defer self.allocator.free(name_z);
+
+                const llvm_struct_type = c.LLVMGetTypeByName(self.llvm_context.module, name_z.ptr);
+                if (llvm_struct_type == null) {
+                    const result = try self.generate_struct_definition(@"struct", @"struct".name);
+
+                    return result.context.@"struct";
+                }
+
+                return llvm_struct_type;
+            },
+            .StructLiteral => |struct_literal| {
+                var generic_arguments = std.ArrayListUnmanaged(Type){};
+                defer generic_arguments.deinit(self.allocator);
+                for (struct_literal.generics) |generic_argument| try generic_arguments.append(self.allocator, generic_argument.type.*);
+
+                const cache_result = try self.mono_cache.get_or_create(struct_literal.@"struct".name, generic_arguments.items);
+                if (!cache_result.is_generated) {
+                    if (self.mono_cache.get_struct(struct_literal.@"struct".name)) |statement| {
+                        _ = try self.generate_monomorphized_struct_statement(statement, cache_result.name, generic_arguments.items);
+                        try self.mono_cache.mark_generated(cache_result.name);
+                    }
+                }
+
+                var substitutions = std.StringHashMap(Type).init(self.allocator);
+                defer substitutions.deinit();
+                for (struct_literal.@"struct".generics, 0..) |generic_parameter, i| {
+                    if (i < generic_arguments.items.len) {
+                        try substitutions.put(generic_parameter.name, generic_arguments.items[i]);
+                    }
+                }
+
+                const old_substitutions = self.substitutions;
+                self.substitutions = substitutions;
+                defer self.substitutions = old_substitutions;
+
+                const name_z = try self.allocator.dupeZ(u8, cache_result.name);
+                defer self.allocator.free(name_z);
+
+                const llvm_struct_type = c.LLVMGetTypeByName(self.llvm_context.module, name_z.ptr);
+
+                return llvm_struct_type;
+            },
+            .Named => |named| {
+                const env = self.program.env;
+                const current_scope = env.current_scope;
+
+                if (current_scope.lookup_type(named.name)) |symbol| {
+                    return self.to_llvm_type(self.resolve_type(symbol.type));
+                }
+
+                return try self.to_llvm_type(self.resolve_type(Type{ .Named = named }));
+            },
+            .Void => return c.LLVMVoidTypeInContext(self.llvm_context.llvm),
+            else => {
+                return error.InvalidType;
+            },
+        }
+    }
 
     pub fn init(allocator: std.mem.Allocator, name: [:0]const u8, context: CompilerContext, program: *Program) !LLVMCodegen {
         const llvm_context = try LLVMCodegenContext.init(name);
-
-        const converter = LLVMConverter{
-            .allocator = allocator,
-            .context = llvm_context,
-            .program = program,
-        };
 
         return LLVMCodegen{
             .allocator = allocator,
             .context = context,
             .llvm_context = llvm_context,
-            .converter = converter,
             .program = program,
             .variables = std.StringHashMap(c.LLVMValueRef).init(allocator),
             .mono_cache = MonomorphizationCache.init(allocator),
@@ -218,7 +221,7 @@ pub const LLVMCodegen = struct {
         if (verify_result != 0) {
             std.debug.print("Module verification failed: {s}\n", .{error_msg});
             c.LLVMDisposeMessage(error_msg);
-            return error.InvalidType; // Use a generic error
+            return error.InvalidType;
         }
     }
 
@@ -231,7 +234,6 @@ pub const LLVMCodegen = struct {
             .ReturnStatement => |*return_statement| try self.generate_return_statement(return_statement),
             .ExternStatement => |*extern_statement| try self.generate_extern_statement(extern_statement),
             .ExpressionStatement => |*expression_statement| try self.generate_expression(expression_statement.expression, options),
-            .IfExpression => |*if_expression| try self.generate_if_expression(if_expression),
             else => return CodegenResult{
                 .value = undefined,
                 .context = .{ .void = {} },
@@ -242,11 +244,11 @@ pub const LLVMCodegen = struct {
     fn generate_expression(self: *LLVMCodegen, node: *Node, options: CodegenOptions) CodegenError!CodegenResult {
         return switch (node.*) {
             .NumberLiteral => |*number_literal| CodegenResult{
-                .value = c.LLVMConstInt(try self.converter.from_type(options.type orelse number_literal.type), std.fmt.parseInt(c_ulonglong, number_literal.value, 10) catch return error.InvalidType, @intCast(0)),
+                .value = c.LLVMConstInt(try self.to_llvm_type(options.type orelse number_literal.type), std.fmt.parseInt(c_ulonglong, number_literal.value, 10) catch return error.InvalidType, @intCast(0)),
                 .context = .{ .void = {} },
             },
             .FloatLiteral => |*float_literal| CodegenResult{
-                .value = c.LLVMConstReal(try self.converter.from_type(options.type orelse float_literal.type), std.fmt.parseFloat(f64, float_literal.value) catch return error.InvalidType),
+                .value = c.LLVMConstReal(try self.to_llvm_type(options.type orelse float_literal.type), std.fmt.parseFloat(f64, float_literal.value) catch return error.InvalidType),
                 .context = .{ .void = {} },
             },
             .StringLiteral => |*string_literal| blk: {
@@ -266,7 +268,7 @@ pub const LLVMCodegen = struct {
             .BinaryExpression => |*binary_expression| try self.generate_binary_expression(binary_expression),
             .UnaryExpression => |*unary_expression| try self.generate_unary_expression(unary_expression, options),
             .CallExpression => |*call_expression| try self.generate_call_expression(call_expression),
-            .StructLiteral => |*struct_literal| try self.generate_struct_literal(struct_literal),
+            .StructLiteral => |*struct_literal| try self.generate_struct_literal(struct_literal, options),
             .MemberExpression => |*member_expression| try self.generate_member_expression(member_expression, options),
             .ArrayLiteral => |*array_literal| try self.generate_array_literal(array_literal, options),
             .IndexExpression => |*index_expression| try self.generate_index_expression(index_expression, options),
@@ -279,15 +281,16 @@ pub const LLVMCodegen = struct {
     }
 
     fn generate_if_expression(self: *LLVMCodegen, expression: *node_zig.IfExpression) CodegenError!CodegenResult {
-        const condition = try self.generate_expression(expression.condition, .{});
+        const condition_result = try self.generate_expression(expression.condition, .{});
+        const condition_value = condition_result.value;
 
-        const function = c.LLVMGetBasicBlockParent(c.LLVMGetInsertBlock(self.llvm_context.builder));
+        const llvm_function = c.LLVMGetBasicBlockParent(c.LLVMGetInsertBlock(self.llvm_context.builder));
 
-        const then_block = c.LLVMAppendBasicBlock(function, "then");
-        const else_block = c.LLVMAppendBasicBlock(function, "else");
-        const merge_block = c.LLVMAppendBasicBlock(function, "merge");
+        const then_block = c.LLVMAppendBasicBlock(llvm_function, "then");
+        const else_block = c.LLVMAppendBasicBlock(llvm_function, "else");
+        const merge_block = c.LLVMAppendBasicBlock(llvm_function, "merge");
 
-        _ = c.LLVMBuildCondBr(self.llvm_context.builder, condition.value, then_block, else_block);
+        _ = c.LLVMBuildCondBr(self.llvm_context.builder, condition_value, then_block, else_block);
 
         c.LLVMPositionBuilderAtEnd(self.llvm_context.builder, then_block);
         _ = try self.generate_node(expression.consequence, .{});
@@ -333,9 +336,244 @@ pub const LLVMCodegen = struct {
         };
     }
 
-    fn generate_function_statement(self: *LLVMCodegen, statement: *FunctionStatement) CodegenError!CodegenResult {
-        if (statement.proto.generics.items.len > 0) {
-            try self.mono_cache.register_generic(statement.proto.name.value, statement);
+    fn build_variadic_array(self: *LLVMCodegen, arguments: []const node_zig.Argument, element: Type) CodegenError!c.LLVMValueRef {
+        const llvm_array_type = c.LLVMArrayType(try self.to_llvm_type(self.resolve_type(element)), @intCast(arguments.len));
+
+        const array_ptr = try self.alloc(llvm_array_type);
+
+        for (arguments, 0..) |argument, i| {
+            const argument_result = try self.generate_expression(argument.value, .{});
+            const argument_value = argument_result.value;
+
+            var indices = [_]c.LLVMValueRef{
+                c.LLVMConstInt(c.LLVMInt32TypeInContext(self.llvm_context.llvm), 0, 0),
+                c.LLVMConstInt(c.LLVMInt32TypeInContext(self.llvm_context.llvm), @intCast(i), 0),
+            };
+
+            self.store(c.LLVMBuildGEP2(self.llvm_context.builder, llvm_array_type, array_ptr, &indices, 2, ""), argument_value);
+        }
+
+        return array_ptr;
+    }
+
+    fn build_call_arguments(
+        self: *LLVMCodegen,
+        arguments: []const node_zig.Argument,
+        parameters: []const type_zig.FunctionParameterType,
+        is_variadic: bool,
+        is_llvm_variadic: bool,
+    ) CodegenError!std.ArrayListUnmanaged(c.LLVMValueRef) {
+        const required_params = if (is_variadic) parameters.len - 1 else parameters.len;
+
+        var llvm_arguments = std.ArrayListUnmanaged(c.LLVMValueRef){};
+        for (arguments, 0..) |argument, i| {
+            if (i >= required_params and is_variadic and !is_llvm_variadic) break;
+
+            const argument_result = try self.generate_expression(argument.value, .{});
+            const argument_value = argument_result.value;
+
+            try llvm_arguments.append(self.allocator, argument_value);
+        }
+
+        if (is_variadic and !is_llvm_variadic) {
+            const variadic_type = self.resolve_type(parameters[parameters.len - 1].type.*);
+            try llvm_arguments.append(self.allocator, try self.build_variadic_array(arguments[required_params..], variadic_type.Array.child.*));
+        }
+
+        return llvm_arguments;
+    }
+
+    fn build_llvm_function_type(
+        self: *LLVMCodegen,
+        parameters: []const type_zig.FunctionParameterType,
+        return_type: Type,
+        is_variadic: bool,
+        is_llvm_variadic: bool,
+    ) CodegenError!c.LLVMTypeRef {
+        const required_params = if (is_variadic) parameters.len - 1 else parameters.len;
+
+        var llvm_parameters = std.ArrayListUnmanaged(c.LLVMTypeRef){};
+        defer llvm_parameters.deinit(self.allocator);
+        for (parameters[0..required_params]) |parameter| {
+            try llvm_parameters.append(self.allocator, try self.to_llvm_type(self.resolve_type(parameter.type.*)));
+        }
+
+        if (is_variadic and !is_llvm_variadic) {
+            try llvm_parameters.append(self.allocator, try self.to_llvm_type(self.resolve_type(parameters[parameters.len - 1].type.*)));
+        }
+
+        return c.LLVMFunctionType(
+            try self.to_llvm_type(self.resolve_type(return_type)),
+            llvm_parameters.items.ptr,
+            @intCast(llvm_parameters.items.len),
+            @intFromBool(is_llvm_variadic),
+        );
+    }
+
+    fn generate_call_expression(self: *LLVMCodegen, expression: *CallExpression) CodegenError!CodegenResult {
+        if (expression.callee.* == .Identifier) {
+            const name = expression.callee.Identifier.value;
+            if (expression.generics.items.len > 0 and self.mono_cache.is_generic_function(name)) {
+                return self.generate_monomorphized_call(expression, name);
+            }
+        }
+
+        const llvm_function = try self.generate_expression(expression.callee, .{});
+
+        const function_type = switch (llvm_function.context) {
+            .function => |f| f.type,
+            else => return error.InvalidType,
+        };
+
+        const is_llvm_variadic = c.LLVMIsFunctionVarArg(c.LLVMGlobalGetValueType(llvm_function.value)) != 0;
+
+        var llvm_arguments = try self.build_call_arguments(expression.arguments.items, function_type.parameters, function_type.is_variadic, is_llvm_variadic);
+        defer llvm_arguments.deinit(self.allocator);
+
+        const llvm_function_type = try self.build_llvm_function_type(function_type.parameters, function_type.return_type.*, function_type.is_variadic, is_llvm_variadic);
+
+        return CodegenResult{
+            .value = c.LLVMBuildCall2(self.llvm_context.builder, llvm_function_type, llvm_function.value, llvm_arguments.items.ptr, @intCast(llvm_arguments.items.len), ""),
+            .context = .{ .void = {} },
+        };
+    }
+
+    fn generate_monomorphized_call(self: *LLVMCodegen, expression: *CallExpression, name: []const u8) CodegenError!CodegenResult {
+        var generic_arguments = std.ArrayListUnmanaged(Type){};
+        defer generic_arguments.deinit(self.allocator);
+        for (expression.generics.items) |generic_argument| try generic_arguments.append(self.allocator, generic_argument.type.value);
+
+        const cache_result = try self.mono_cache.get_or_create(name, generic_arguments.items);
+        if (!cache_result.is_generated) {
+            if (self.mono_cache.get_function(name)) |statement| {
+                _ = try self.generate_monomorphized_function(statement, cache_result.name, generic_arguments.items);
+                try self.mono_cache.mark_generated(cache_result.name);
+            }
+        }
+
+        const name_z = try self.allocator.dupeZ(u8, cache_result.name);
+        defer self.allocator.free(name_z);
+
+        const function_statement = self.mono_cache.get_function(name) orelse return error.FunctionNotFound;
+
+        var substitutions = std.StringHashMap(Type).init(self.allocator);
+        defer substitutions.deinit();
+        for (function_statement.proto.generics.items, 0..) |generic_parameter, i| {
+            if (i < generic_arguments.items.len) try substitutions.put(generic_parameter.name.value, generic_arguments.items[i]);
+        }
+
+        const llvm_function = c.LLVMGetNamedFunction(self.llvm_context.module, name_z.ptr) orelse return error.FunctionNotFound;
+
+        const old_substitutions = self.substitutions;
+        self.substitutions = substitutions;
+        defer self.substitutions = old_substitutions;
+
+        var parameters = std.ArrayListUnmanaged(type_zig.FunctionParameterType){};
+        defer parameters.deinit(self.allocator);
+        for (function_statement.proto.parameters.items) |parameter| {
+            try parameters.append(self.allocator, type_zig.FunctionParameterType{ .name = parameter.name.value, .type = &parameter.type.value });
+        }
+
+        const is_variadic = for (function_statement.proto.parameters.items) |parameter| {
+            if (parameter.is_variadic) break true;
+        } else false;
+
+        var llvm_arguments = try self.build_call_arguments(expression.arguments.items, parameters.items, is_variadic, false);
+        defer llvm_arguments.deinit(self.allocator);
+
+        const llvm_function_type = try self.build_llvm_function_type(parameters.items, function_statement.proto.return_type.value, is_variadic, false);
+
+        return CodegenResult{
+            .value = c.LLVMBuildCall2(self.llvm_context.builder, llvm_function_type, llvm_function, llvm_arguments.items.ptr, @intCast(llvm_arguments.items.len), ""),
+            .context = .{ .void = {} },
+        };
+    }
+
+    fn generate_struct(self: *LLVMCodegen, llvm_struct_type: c.LLVMTypeRef, fields: []const node_zig.StructLiteralField, options: CodegenOptions) CodegenError!CodegenResult {
+        const struct_ptr = try self.alloc(llvm_struct_type);
+
+        for (fields, 0..) |field, i| {
+            const field_ptr = c.LLVMBuildStructGEP2(self.llvm_context.builder, llvm_struct_type, struct_ptr, @intCast(i), "");
+
+            const field_result = try self.generate_expression(field.value, .{});
+            const field_value = field_result.value;
+
+            _ = c.LLVMBuildStore(self.llvm_context.builder, field_value, field_ptr);
+        }
+
+        return CodegenResult{
+            .value = if (options.load) self.load(struct_ptr, llvm_struct_type) else struct_ptr,
+            .context = .{ .void = {} },
+        };
+    }
+
+    fn generate_struct_literal(self: *LLVMCodegen, literal: *node_zig.StructLiteral, options: CodegenOptions) CodegenError!CodegenResult {
+        if (literal.generics.items.len > 0 and self.mono_cache.is_generic_struct(literal.name.value)) {
+            return try self.generate_monomorphized_struct_literal(literal, literal.name.value, options);
+        }
+
+        const llvm_struct_type = try self.to_llvm_type(self.resolve_type(Type{ .Struct = literal.type.?.@"struct".* }));
+
+        return try self.generate_struct(llvm_struct_type, literal.fields.items, options);
+    }
+
+    fn generate_monomorphized_struct_literal(self: *LLVMCodegen, literal: *node_zig.StructLiteral, name: []const u8, options: CodegenOptions) CodegenError!CodegenResult {
+        var generic_arguments = std.ArrayListUnmanaged(Type){};
+        defer generic_arguments.deinit(self.allocator);
+        for (literal.generics.items) |generic_argument| try generic_arguments.append(self.allocator, generic_argument.type.value);
+
+        const cache_result = try self.mono_cache.get_or_create(name, generic_arguments.items);
+        if (!cache_result.is_generated) {
+            if (self.mono_cache.get_struct(name)) |statement| {
+                _ = try self.generate_monomorphized_struct_statement(statement, cache_result.name, generic_arguments.items);
+                try self.mono_cache.mark_generated(cache_result.name);
+            }
+        }
+
+        var substitutions = std.StringHashMap(Type).init(self.allocator);
+        defer substitutions.deinit();
+        for (literal.type.?.@"struct".generics, 0..) |generic_parameter, i| {
+            if (i < generic_arguments.items.len) try substitutions.put(generic_parameter.name, generic_arguments.items[i]);
+        }
+
+        const old_substitutions = self.substitutions;
+        self.substitutions = substitutions;
+        defer self.substitutions = old_substitutions;
+
+        const name_z = try self.allocator.dupeZ(u8, cache_result.name);
+        defer self.allocator.free(name_z);
+
+        const llvm_struct_type = c.LLVMGetTypeByName(self.llvm_context.module, name_z.ptr);
+
+        return try self.generate_struct(llvm_struct_type, literal.fields.items, options);
+    }
+
+    fn generate_struct_definition(self: *LLVMCodegen, struct_type: type_zig.StructType, name: []const u8) CodegenError!CodegenResult {
+        const name_z = try self.allocator.dupeZ(u8, name);
+        defer self.allocator.free(name_z);
+
+        const llvm_struct_type = c.LLVMStructCreateNamed(self.llvm_context.llvm, name_z.ptr);
+
+        var llvm_fields = std.ArrayListUnmanaged(c.LLVMTypeRef){};
+        defer llvm_fields.deinit(self.allocator);
+        for (struct_type.fields) |field| {
+            try llvm_fields.append(self.allocator, try self.to_llvm_type(self.resolve_type(field.type.*)));
+        }
+
+        const owned_llvm_fields = try llvm_fields.toOwnedSlice(self.allocator);
+        defer self.allocator.free(owned_llvm_fields);
+
+        c.LLVMStructSetBody(llvm_struct_type, owned_llvm_fields.ptr, @intCast(owned_llvm_fields.len), 0);
+
+        return CodegenResult{
+            .value = c.LLVMGetUndef(self.void()),
+            .context = .{ .@"struct" = llvm_struct_type },
+        };
+    }
+
+    fn generate_struct_statement(self: *LLVMCodegen, statement: *node_zig.StructStatement) CodegenError!CodegenResult {
+        if (statement.generics.items.len > 0) {
+            try self.mono_cache.register_struct(statement.name.value, statement);
 
             return CodegenResult{
                 .value = c.LLVMGetUndef(self.void()),
@@ -343,44 +581,46 @@ pub const LLVMCodegen = struct {
             };
         }
 
-        var parameter_types = std.ArrayListUnmanaged(Type){};
-        defer parameter_types.deinit(self.allocator);
-        for (statement.proto.parameters.items) |param| {
-            if (!param.is_variadic) try parameter_types.append(self.allocator, param.type.value);
+        return self.generate_struct_definition(statement.type.?, statement.name.value);
+    }
+
+    fn generate_monomorphized_struct_statement(self: *LLVMCodegen, statement: *node_zig.StructStatement, name: []const u8, generic_arguments: []const Type) CodegenError!CodegenResult {
+        var substitutions = std.StringHashMap(Type).init(self.allocator);
+        defer substitutions.deinit();
+        for (statement.generics.items, 0..) |generic_parameter, i| {
+            if (i < generic_arguments.len) {
+                try substitutions.put(generic_parameter.name.value, generic_arguments[i]);
+            }
         }
 
-        const mangled_name = try mono_zig.mangle(self.allocator, statement.proto.name.value, parameter_types.items);
-        defer self.allocator.free(mangled_name);
+        const old_substitutions = self.substitutions;
+        self.substitutions = substitutions;
+        defer self.substitutions = old_substitutions;
 
-        return self.generate_function(statement, mangled_name);
+        return self.generate_struct_definition(statement.type.?, name);
     }
 
     fn generate_function(self: *LLVMCodegen, statement: *FunctionStatement, name: []const u8) CodegenError!CodegenResult {
-        const function = try self.generate_function_proto_with_name(&statement.proto, name);
+        const llvm_function = try self.generate_function_proto_with_name(&statement.proto, name, false);
 
         const env = self.program.env;
         const current_scope = env.current_scope;
 
         env.set_current_scope(statement.body.scope);
 
-        const body = c.LLVMAppendBasicBlock(function, "entry");
-        c.LLVMPositionBuilderAtEnd(self.llvm_context.builder, body);
+        const body_block = c.LLVMAppendBasicBlock(llvm_function, "entry");
+        c.LLVMPositionBuilderAtEnd(self.llvm_context.builder, body_block);
 
         const scope_name = statement.body.scope.name;
         for (statement.proto.parameters.items, 0..) |*parameter, index| {
-            const parameter_value = c.LLVMGetParam(function, @intCast(index));
+            const parameter_value = c.LLVMGetParam(llvm_function, @intCast(index));
 
             const parameter_name = std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ scope_name, parameter.name.value }) catch return error.OutOfMemory;
 
-            const parameter_type = if (self.converter.substitutions) |substitutions|
-                self.substitute_type_value(parameter.type.value, substitutions)
-            else
-                parameter.type.value;
+            const parameter_ptr = try self.alloc(try self.to_llvm_type(self.resolve_type(parameter.type.value)));
+            self.store(parameter_ptr, parameter_value);
 
-            const ptr = try self.alloc(try self.converter.from_type(parameter_type));
-            self.store(ptr, parameter_value);
-
-            try self.variables.put(parameter_name, ptr);
+            try self.variables.put(parameter_name, parameter_ptr);
         }
 
         for (statement.body.statements.items) |*node| {
@@ -389,7 +629,7 @@ pub const LLVMCodegen = struct {
 
         env.set_current_scope(current_scope);
 
-        _ = c.LLVMVerifyFunction(function, c.LLVMAbortProcessAction);
+        _ = c.LLVMVerifyFunction(llvm_function, c.LLVMAbortProcessAction);
 
         return CodegenResult{
             .value = c.LLVMGetUndef(self.void()),
@@ -401,7 +641,7 @@ pub const LLVMCodegen = struct {
         self: *LLVMCodegen,
         statement: *FunctionStatement,
         name: []const u8,
-        types: []const Type,
+        generic_arguments: []const Type,
     ) CodegenError!c.LLVMValueRef {
         const env = self.program.env;
         const current_scope = env.current_scope;
@@ -409,19 +649,16 @@ pub const LLVMCodegen = struct {
         const current_block = c.LLVMGetInsertBlock(self.llvm_context.builder);
 
         var substitutions = std.StringHashMap(Type).init(self.allocator);
-        for (statement.proto.generics.items, 0..) |generic, index| {
-            if (index < types.len) {
-                try substitutions.put(generic.name.value, types[index]);
+        defer substitutions.deinit();
+        for (statement.proto.generics.items, 0..) |generic_parameter, index| {
+            if (index < generic_arguments.len) {
+                try substitutions.put(generic_parameter.name.value, generic_arguments[index]);
             }
         }
 
-        const old_substitutions = self.converter.substitutions;
-        self.converter.substitutions = substitutions;
-
-        defer {
-            self.converter.substitutions = old_substitutions;
-            substitutions.deinit();
-        }
+        const old_substitutions = self.substitutions;
+        self.substitutions = substitutions;
+        defer self.substitutions = old_substitutions;
 
         _ = try self.generate_function(statement, name);
 
@@ -436,30 +673,26 @@ pub const LLVMCodegen = struct {
         return c.LLVMGetNamedFunction(self.llvm_context.module, name_z.ptr);
     }
 
-    fn substitute_type_value(self: *LLVMCodegen, @"type": Type, substitutions: std.StringHashMap(Type)) Type {
-        return switch (@"type") {
-            .Named => |named| substitutions.get(named.name) orelse @"type",
-            .Pointer => |pointer| blk: {
-                const child = self.substitute_type_value(pointer.child.*, substitutions);
-                const child_ptr = memory_zig.create(self.allocator, Type, child) catch break :blk @"type";
-                break :blk Type{ .Pointer = .{ .child = child_ptr } };
-            },
-            .Array => |array| blk: {
-                const child = self.substitute_type_value(array.child.*, substitutions);
-                const child_ptr = memory_zig.create(self.allocator, Type, child) catch break :blk @"type";
-                break :blk Type{ .Array = .{ .child = child_ptr, .size = array.size } };
-            },
-            else => @"type",
-        };
-    }
+    fn generate_function_statement(self: *LLVMCodegen, statement: *FunctionStatement) CodegenError!CodegenResult {
+        if (statement.proto.generics.items.len > 0) {
+            try self.mono_cache.register_function(statement.proto.name.value, statement);
 
-    fn generate_struct_statement(self: *LLVMCodegen, struct_statement: *node_zig.StructStatement) CodegenError!CodegenResult {
-        _ = self;
-        _ = struct_statement;
-        return CodegenResult{
-            .value = undefined,
-            .context = .{ .void = {} },
-        };
+            return CodegenResult{
+                .value = c.LLVMGetUndef(self.void()),
+                .context = .{ .void = {} },
+            };
+        }
+
+        var parameters = std.ArrayListUnmanaged(Type){};
+        defer parameters.deinit(self.allocator);
+        for (statement.proto.parameters.items) |param| {
+            if (!param.is_variadic) try parameters.append(self.allocator, param.type.value);
+        }
+
+        const name = try mono_zig.mangle(self.allocator, statement.proto.name.value, parameters.items);
+        defer self.allocator.free(name);
+
+        return self.generate_function(statement, name);
     }
 
     fn generate_extern_statement(self: *LLVMCodegen, statement: *node_zig.ExternStatement) CodegenError!CodegenResult {
@@ -473,7 +706,7 @@ pub const LLVMCodegen = struct {
                 const name_z = try self.allocator.dupeZ(u8, name);
                 defer self.allocator.free(name_z);
 
-                const global = c.LLVMAddGlobal(self.llvm_context.module, try self.converter.from_type(variable.type.value), name_z.ptr);
+                const global = c.LLVMAddGlobal(self.llvm_context.module, try self.to_llvm_type(variable.type.value), name_z.ptr);
                 c.LLVMSetLinkage(global, c.LLVMExternalLinkage);
 
                 try self.variables.put(name, global);
@@ -487,7 +720,7 @@ pub const LLVMCodegen = struct {
     }
 
     fn generate_function_proto(self: *LLVMCodegen, statement: *FunctionProto) CodegenError!CodegenResult {
-        const function = try self.generate_function_proto_impl(statement, statement.name.value, true);
+        const function = try self.generate_function_proto_with_name(statement, statement.name.value, true);
 
         const env = self.program.env;
         const current_scope = env.current_scope;
@@ -500,15 +733,11 @@ pub const LLVMCodegen = struct {
         };
     }
 
-    fn generate_function_proto_with_name(self: *LLVMCodegen, statement: *FunctionProto, name: []const u8) CodegenError!c.LLVMValueRef {
-        return self.generate_function_proto_impl(statement, name, false);
-    }
-
-    fn generate_function_proto_impl(self: *LLVMCodegen, statement: *FunctionProto, name: []const u8, is_extern: bool) CodegenError!c.LLVMValueRef {
-        var parameters = std.ArrayListUnmanaged(c.LLVMTypeRef){};
-        defer parameters.deinit(self.allocator);
-
+    fn generate_function_proto_with_name(self: *LLVMCodegen, statement: *FunctionProto, name: []const u8, is_extern: bool) CodegenError!c.LLVMValueRef {
         var is_variadic = false;
+
+        var llvm_parameters = std.ArrayListUnmanaged(c.LLVMTypeRef){};
+        defer llvm_parameters.deinit(self.allocator);
         for (statement.parameters.items) |parameter| {
             if (parameter.is_variadic) {
                 is_variadic = true;
@@ -518,35 +747,27 @@ pub const LLVMCodegen = struct {
                 }
             }
 
-            const parameter_type = if (self.converter.substitutions) |substitutions|
-                self.substitute_type_value(parameter.type.value, substitutions)
-            else
-                parameter.type.value;
-
-            try parameters.append(self.allocator, try self.converter.from_type(parameter_type));
+            try llvm_parameters.append(self.allocator, try self.to_llvm_type(self.resolve_type(parameter.type.value)));
         }
-
-        const return_type = if (self.converter.substitutions) |substitutions|
-            self.substitute_type_value(statement.return_type.value, substitutions)
-        else
-            statement.return_type.value;
-
-        const owned_parameters = try parameters.toOwnedSlice(self.allocator);
-        defer self.allocator.free(owned_parameters);
-
-        const llvm_is_variadic = is_variadic and is_extern;
-
-        const function_type = c.LLVMFunctionType(
-            try self.converter.from_type(return_type),
-            owned_parameters.ptr,
-            @intCast(owned_parameters.len),
-            @intFromBool(llvm_is_variadic),
-        );
 
         const name_z = try self.allocator.dupeZ(u8, name);
         defer self.allocator.free(name_z);
 
-        return c.LLVMAddFunction(self.llvm_context.module, name_z.ptr, function_type);
+        const return_type = try self.to_llvm_type(self.resolve_type(statement.return_type.value));
+
+        const owned_llvm_parameters = try llvm_parameters.toOwnedSlice(self.allocator);
+        defer self.allocator.free(owned_llvm_parameters);
+
+        const is_llvm_variadic = is_variadic and is_extern;
+
+        const llvm_function_type = c.LLVMFunctionType(
+            return_type,
+            owned_llvm_parameters.ptr,
+            @intCast(owned_llvm_parameters.len),
+            @intFromBool(is_llvm_variadic),
+        );
+
+        return c.LLVMAddFunction(self.llvm_context.module, name_z.ptr, llvm_function_type);
     }
 
     fn generate_variable_statement(self: *LLVMCodegen, statement: *VariableStatement) CodegenError!CodegenResult {
@@ -564,27 +785,27 @@ pub const LLVMCodegen = struct {
 
         const name = std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ current_scope.name, variable_symbol.name }) catch return error.OutOfMemory;
 
-        var variable: c.LLVMValueRef = undefined;
+        var ptr: c.LLVMValueRef = undefined;
         if (current_scope.is_global()) {
             const name_z = try self.allocator.dupeZ(u8, name);
             defer self.allocator.free(name_z);
 
-            variable = c.LLVMAddGlobal(self.llvm_context.module, try self.converter.from_type(variable_symbol.type), name_z.ptr);
-            c.LLVMSetGlobalConstant(variable, @intCast(1));
-            c.LLVMSetLinkage(variable, c.LLVMExternalLinkage);
+            ptr = c.LLVMAddGlobal(self.llvm_context.module, try self.to_llvm_type(variable_symbol.type), name_z.ptr);
+            c.LLVMSetGlobalConstant(ptr, @intFromBool(true));
+            c.LLVMSetLinkage(ptr, c.LLVMExternalLinkage);
 
             if (value) |initializer| {
-                c.LLVMSetInitializer(variable, initializer);
+                c.LLVMSetInitializer(ptr, initializer);
             }
         } else {
-            variable = try self.alloc(try self.converter.from_type(variable_symbol.type));
+            ptr = try self.alloc(try self.to_llvm_type(variable_symbol.type));
 
             if (value) |initializer| {
-                self.store(variable, initializer);
+                self.store(ptr, initializer);
             }
         }
 
-        try self.variables.put(name, variable);
+        try self.variables.put(name, ptr);
 
         return CodegenResult{
             .value = c.LLVMGetUndef(self.void()),
@@ -605,9 +826,6 @@ pub const LLVMCodegen = struct {
     fn generate_identifier(self: *LLVMCodegen, node: *Identifier, options: CodegenOptions) CodegenError!CodegenResult {
         const env = self.program.env;
         const current_scope = env.current_scope;
-
-        const name = std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ current_scope.name, node.value }) catch return error.OutOfMemory;
-        defer self.allocator.free(name);
 
         if (node.type == .Function) {
             const function_type = node.type.Function;
@@ -651,17 +869,31 @@ pub const LLVMCodegen = struct {
 
         const variable_symbol = current_scope.lookup_variable(node.value) orelse return CodegenError.VariableNotFound;
 
-        const value = self.variables.get(name) orelse return CodegenError.VariableNotFound;
+        var value: ?c.LLVMValueRef = null;
+
+        var scope: ?*scope_zig.Scope = current_scope;
+        while (scope) |s| {
+            const name = try std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ s.name, node.value });
+            defer self.allocator.free(name);
+
+            if (self.variables.get(name)) |v| {
+                value = v;
+
+                break;
+            }
+
+            scope = s.parent;
+        }
 
         return CodegenResult{
-            .value = if (options.load) self.load(value, try self.converter.from_type(variable_symbol.type)) else value,
+            .value = if (options.load) self.load(value orelse return CodegenError.VariableNotFound, try self.to_llvm_type(variable_symbol.type)) else value orelse return CodegenError.VariableNotFound,
             .context = .{ .void = {} },
         };
     }
 
     fn generate_array_literal(self: *LLVMCodegen, literal: *ArrayLiteral, options: CodegenOptions) CodegenError!CodegenResult {
         const array_type = options.type orelse literal.type;
-        const array_llvm_type = try self.converter.from_type(array_type);
+        const array_llvm_type = try self.to_llvm_type(array_type);
 
         const array_ptr = try self.alloc(array_llvm_type);
 
@@ -690,25 +922,25 @@ pub const LLVMCodegen = struct {
         const is_fixed = array_type.Array.size != null;
 
         const array_result = try self.generate_expression(expression.array, .{ .load = !is_fixed });
-        const array = array_result.value;
+        const array_value = array_result.value;
 
         const index_result = try self.generate_expression(expression.index, .{});
-        const index = index_result.value;
+        const index_value = index_result.value;
 
-        const llvm_element_type = try self.converter.from_type(expression.type);
+        const llvm_element_type = try self.to_llvm_type(expression.type);
 
         var ptr: c.LLVMValueRef = undefined;
         if (is_fixed) {
-            const llvm_array_type = try self.converter.from_type(array_type);
+            const llvm_array_type = try self.to_llvm_type(array_type);
             var indices = [_]c.LLVMValueRef{
                 c.LLVMConstInt(c.LLVMInt64TypeInContext(self.llvm_context.llvm), 0, 0),
-                index,
+                index_value,
             };
 
-            ptr = c.LLVMBuildGEP2(self.llvm_context.builder, llvm_array_type, array, &indices[0], 2, "");
+            ptr = c.LLVMBuildGEP2(self.llvm_context.builder, llvm_array_type, array_value, &indices[0], 2, "");
         } else {
-            var indices = [_]c.LLVMValueRef{index};
-            ptr = c.LLVMBuildGEP2(self.llvm_context.builder, llvm_element_type, array, &indices[0], 1, "");
+            var indices = [_]c.LLVMValueRef{index_value};
+            ptr = c.LLVMBuildGEP2(self.llvm_context.builder, llvm_element_type, array_value, &indices[0], 1, "");
         }
 
         return CodegenResult{
@@ -723,132 +955,132 @@ pub const LLVMCodegen = struct {
         switch (expression.operator.type) {
             .Assign => {
                 const left_result = try self.generate_expression(expression.left, .{ .load = false });
-                const left = left_result.value;
+                const left_value = left_result.value;
 
                 const right_result = try self.generate_expression(expression.right, .{});
-                const right = right_result.value;
+                const right_value = right_result.value;
 
-                _ = c.LLVMBuildStore(self.llvm_context.builder, right, left);
+                _ = c.LLVMBuildStore(self.llvm_context.builder, right_value, left_value);
 
-                value = right;
+                value = right_value;
             },
             .As => {
                 const right_type = self.resolve_type(expression.right.get_type());
                 const left_type = self.resolve_type(expression.left.get_type());
 
                 const left_result = try self.generate_expression(expression.left, .{});
-                const left = left_result.value;
+                const left_value = left_result.value;
 
-                value = try self.cast_type(left, left_type, right_type);
+                value = try self.cast_type(left_value, left_type, right_type);
             },
             else => {
                 const left_result = try self.generate_expression(expression.left, .{});
                 const right_result = try self.generate_expression(expression.right, .{});
 
-                const left = left_result.value;
-                const right = right_result.value;
+                const left_value = left_result.value;
+                const right_value = right_result.value;
 
                 switch (expression.operator.type) {
                     .Plus => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFAdd(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildFAdd(self.llvm_context.builder, left_value, right_value, "");
                         } else {
-                            value = c.LLVMBuildAdd(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildAdd(self.llvm_context.builder, left_value, right_value, "");
                         }
                     },
                     .Minus => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFSub(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildFSub(self.llvm_context.builder, left_value, right_value, "");
                         } else {
-                            value = c.LLVMBuildSub(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildSub(self.llvm_context.builder, left_value, right_value, "");
                         }
                     },
                     .Asterisk => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFMul(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildFMul(self.llvm_context.builder, left_value, right_value, "");
                         } else {
-                            value = c.LLVMBuildMul(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildMul(self.llvm_context.builder, left_value, right_value, "");
                         }
                     },
                     .Divide => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFDiv(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildFDiv(self.llvm_context.builder, left_value, right_value, "");
                         } else {
                             if (expression.type.Integer.is_unsigned) {
-                                value = c.LLVMBuildUDiv(self.llvm_context.builder, left, right, "");
+                                value = c.LLVMBuildUDiv(self.llvm_context.builder, left_value, right_value, "");
                             } else {
-                                value = c.LLVMBuildSDiv(self.llvm_context.builder, left, right, "");
+                                value = c.LLVMBuildSDiv(self.llvm_context.builder, left_value, right_value, "");
                             }
                         }
                     },
                     .Modulo => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFRem(self.llvm_context.builder, left, right, "");
+                            value = c.LLVMBuildFRem(self.llvm_context.builder, left_value, right_value, "");
                         } else {
                             if (expression.type.Integer.is_unsigned) {
-                                value = c.LLVMBuildURem(self.llvm_context.builder, left, right, "");
+                                value = c.LLVMBuildURem(self.llvm_context.builder, left_value, right_value, "");
                             } else {
-                                value = c.LLVMBuildSRem(self.llvm_context.builder, left, right, "");
+                                value = c.LLVMBuildSRem(self.llvm_context.builder, left_value, right_value, "");
                             }
                         }
                     },
-                    .And => value = c.LLVMBuildAnd(self.llvm_context.builder, left, right, ""),
-                    .Or => value = c.LLVMBuildOr(self.llvm_context.builder, left, right, ""),
+                    .And => value = c.LLVMBuildAnd(self.llvm_context.builder, left_value, right_value, ""),
+                    .Or => value = c.LLVMBuildOr(self.llvm_context.builder, left_value, right_value, ""),
                     .Equals => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOEQ, left, right, "");
+                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOEQ, left_value, right_value, "");
                         } else {
-                            value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntEQ, left, right, "");
+                            value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntEQ, left_value, right_value, "");
                         }
                     },
                     .NotEquals => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealONE, left, right, "");
+                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealONE, left_value, right_value, "");
                         } else {
-                            value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntNE, left, right, "");
+                            value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntNE, left_value, right_value, "");
                         }
                     },
                     .LessThan => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOLT, left, right, "");
+                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOLT, left_value, right_value, "");
                         } else {
                             if (expression.type.Integer.is_unsigned) {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntULT, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntULT, left_value, right_value, "");
                             } else {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSLT, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSLT, left_value, right_value, "");
                             }
                         }
                     },
                     .GreaterThan => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOGT, left, right, "");
+                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOGT, left_value, right_value, "");
                         } else {
                             if (expression.type.Integer.is_unsigned) {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntUGT, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntUGT, left_value, right_value, "");
                             } else {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSGT, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSGT, left_value, right_value, "");
                             }
                         }
                     },
                     .LessEqual => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOLE, left, right, "");
+                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOLE, left_value, right_value, "");
                         } else {
                             if (expression.type.Integer.is_unsigned) {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntULE, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntULE, left_value, right_value, "");
                             } else {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSLE, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSLE, left_value, right_value, "");
                             }
                         }
                     },
                     .GreaterEqual => {
                         if (expression.type == .Float) {
-                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOGE, left, right, "");
+                            value = c.LLVMBuildFCmp(self.llvm_context.builder, c.LLVMRealOGE, left_value, right_value, "");
                         } else {
                             if (expression.type.Integer.is_unsigned) {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntUGE, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntUGE, left_value, right_value, "");
                             } else {
-                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSGE, left, right, "");
+                                value = c.LLVMBuildICmp(self.llvm_context.builder, c.LLVMIntSGE, left_value, right_value, "");
                             }
                         }
                     },
@@ -867,219 +1099,25 @@ pub const LLVMCodegen = struct {
         const operand_result = try self.generate_expression(expression.operand, .{
             .load = expression.operator.type != .Ampersand,
         });
-        const operand = operand_result.value;
+        const operand_value = operand_result.value;
 
         var value: c.LLVMValueRef = undefined;
 
         switch (expression.operator.type) {
-            .Not => value = c.LLVMBuildNot(self.llvm_context.builder, operand, ""),
-            .Minus => value = c.LLVMBuildNeg(self.llvm_context.builder, operand, ""),
+            .Not => value = c.LLVMBuildNot(self.llvm_context.builder, operand_value, ""),
+            .Minus => value = c.LLVMBuildNeg(self.llvm_context.builder, operand_value, ""),
             .Asterisk => {
                 if (options.load) {
-                    value = self.load(operand, try self.converter.from_type(expression.type));
+                    value = self.load(operand_value, try self.to_llvm_type(expression.type));
                 } else {
-                    value = operand;
+                    value = operand_value;
                 }
             },
             .Ampersand => {
-                value = operand;
+                value = operand_value;
             },
             else => return error.InvalidType,
         }
-
-        return CodegenResult{
-            .value = value,
-            .context = .{ .void = {} },
-        };
-    }
-
-    fn build_variadic_array(self: *LLVMCodegen, arguments: []const node_zig.Argument, element: Type) CodegenError!c.LLVMValueRef {
-        const element_type = self.resolve_type(element);
-        const llvm_element_type = try self.converter.from_type(element_type);
-
-        const array_type = c.LLVMArrayType(llvm_element_type, @intCast(arguments.len));
-        const array_ptr = try self.alloc(array_type);
-
-        for (arguments, 0..) |argument, i| {
-            const value_result = try self.generate_expression(argument.value, .{});
-            const value = value_result.value;
-
-            var indices = [_]c.LLVMValueRef{
-                c.LLVMConstInt(c.LLVMInt32TypeInContext(self.llvm_context.llvm), 0, 0),
-                c.LLVMConstInt(c.LLVMInt32TypeInContext(self.llvm_context.llvm), @intCast(i), 0),
-            };
-
-            self.store(c.LLVMBuildGEP2(self.llvm_context.builder, array_type, array_ptr, &indices, 2, ""), value);
-        }
-
-        return array_ptr;
-    }
-
-    fn build_call_arguments(
-        self: *LLVMCodegen,
-        expression: *CallExpression,
-        parameters: []const type_zig.FunctionParameterType,
-        is_variadic: bool,
-        is_llvm_variadic: bool,
-    ) CodegenError!std.ArrayListUnmanaged(c.LLVMValueRef) {
-        var arguments = std.ArrayListUnmanaged(c.LLVMValueRef){};
-
-        const required_params = if (is_variadic) parameters.len - 1 else parameters.len;
-
-        for (expression.arguments.items, 0..) |argument, i| {
-            if (i >= required_params and is_variadic and !is_llvm_variadic) break;
-
-            const value_result = try self.generate_expression(argument.value, .{});
-            const value = value_result.value;
-
-            try arguments.append(self.allocator, value);
-        }
-
-        if (is_variadic and !is_llvm_variadic) {
-            const variadic_type = self.resolve_type(parameters[parameters.len - 1].type.*);
-            if (variadic_type == .Array) {
-                const variadic_args = expression.arguments.items[required_params..];
-                try arguments.append(self.allocator, try self.build_variadic_array(variadic_args, variadic_type.Array.child.*));
-            }
-        }
-
-        return arguments;
-    }
-
-    fn build_llvm_function_type(
-        self: *LLVMCodegen,
-        parameters: []const type_zig.FunctionParameterType,
-        return_type: Type,
-        is_variadic: bool,
-        is_llvm_variadic: bool,
-    ) CodegenError!c.LLVMTypeRef {
-        var llvm_parameters = std.ArrayListUnmanaged(c.LLVMTypeRef){};
-        defer llvm_parameters.deinit(self.allocator);
-
-        const required_params = if (is_variadic) parameters.len - 1 else parameters.len;
-        for (parameters[0..required_params]) |p| {
-            try llvm_parameters.append(self.allocator, try self.converter.from_type(self.resolve_type(p.type.*)));
-        }
-
-        if (is_variadic and !is_llvm_variadic) {
-            try llvm_parameters.append(self.allocator, try self.converter.from_type(self.resolve_type(parameters[parameters.len - 1].type.*)));
-        }
-
-        return c.LLVMFunctionType(
-            try self.converter.from_type(self.resolve_type(return_type)),
-            llvm_parameters.items.ptr,
-            @intCast(llvm_parameters.items.len),
-            @intFromBool(is_llvm_variadic),
-        );
-    }
-
-    fn generate_call_expression(self: *LLVMCodegen, expression: *CallExpression) CodegenError!CodegenResult {
-        if (expression.callee.* == .Identifier) {
-            const name = expression.callee.Identifier.value;
-            if (expression.generics.items.len > 0 and self.mono_cache.is_generic(name)) {
-                return self.generate_monomorphized_call(expression, name);
-            }
-        }
-
-        const callee = try self.generate_expression(expression.callee, .{});
-        const func_type = switch (callee.context) {
-            .function => |f| f.type,
-            else => return error.InvalidType,
-        };
-
-        const is_llvm_variadic = c.LLVMIsFunctionVarArg(c.LLVMGlobalGetValueType(callee.value)) != 0;
-
-        var arguments = try self.build_call_arguments(expression, func_type.parameters, func_type.is_variadic, is_llvm_variadic);
-        defer arguments.deinit(self.allocator);
-
-        return CodegenResult{
-            .value = c.LLVMBuildCall2(self.llvm_context.builder, try self.build_llvm_function_type(func_type.parameters, func_type.return_type.*, func_type.is_variadic, is_llvm_variadic), callee.value, arguments.items.ptr, @intCast(arguments.items.len), ""),
-            .context = .{ .void = {} },
-        };
-    }
-
-    fn generate_monomorphized_call(self: *LLVMCodegen, expression: *CallExpression, name: []const u8) CodegenError!CodegenResult {
-        var types = std.ArrayListUnmanaged(Type){};
-        defer types.deinit(self.allocator);
-
-        for (expression.generics.items) |g| try types.append(self.allocator, g.type.value);
-
-        const result = try self.mono_cache.get_or_create(name, types.items);
-
-        if (!result.is_generated) {
-            if (self.mono_cache.get_generic(name)) |generic_fn| {
-                _ = try self.generate_monomorphized_function(generic_fn, result.name, types.items);
-                try self.mono_cache.mark_generated(result.name);
-            }
-        }
-
-        const name_z = try self.allocator.dupeZ(u8, result.name);
-        defer self.allocator.free(name_z);
-
-        const function = c.LLVMGetNamedFunction(self.llvm_context.module, name_z.ptr) orelse return error.FunctionNotFound;
-        const generic_function = self.mono_cache.get_generic(name) orelse return error.FunctionNotFound;
-
-        var substitutions = std.StringHashMap(Type).init(self.allocator);
-        defer substitutions.deinit();
-        for (generic_function.proto.generics.items, 0..) |g, i| {
-            if (i < types.items.len) try substitutions.put(g.name.value, types.items[i]);
-        }
-
-        const old_substitutions = self.converter.substitutions;
-        self.converter.substitutions = substitutions;
-        defer self.converter.substitutions = old_substitutions;
-
-        var params = std.ArrayListUnmanaged(type_zig.FunctionParameterType){};
-        defer params.deinit(self.allocator);
-        for (generic_function.proto.parameters.items) |p| {
-            try params.append(self.allocator, type_zig.FunctionParameterType{ .name = p.name.value, .type = &p.type.value });
-        }
-
-        const is_variadic = for (generic_function.proto.parameters.items) |parameter| {
-            if (parameter.is_variadic) break true;
-        } else false;
-
-        var arguments = try self.build_call_arguments(expression, params.items, is_variadic, false);
-        defer arguments.deinit(self.allocator);
-
-        return CodegenResult{
-            .value = c.LLVMBuildCall2(self.llvm_context.builder, try self.build_llvm_function_type(params.items, generic_function.proto.return_type.value, is_variadic, false), function, arguments.items.ptr, @intCast(arguments.items.len), ""),
-            .context = .{ .void = {} },
-        };
-    }
-
-    fn generate_struct_literal(self: *LLVMCodegen, literal: *node_zig.StructLiteral) CodegenError!CodegenResult {
-        _ = try self.converter.from_type(literal.type);
-
-        var values = std.ArrayListUnmanaged(c.LLVMValueRef){};
-        defer values.deinit(self.allocator);
-
-        switch (literal.type) {
-            .Struct => |@"struct"| {
-                for (@"struct".fields) |field_type| {
-                    var found = false;
-
-                    for (literal.fields.items) |field| {
-                        if (std.mem.eql(u8, field.name.value, field_type.name)) {
-                            const result = try self.generate_expression(field.value, .{});
-                            try values.append(self.allocator, result.value);
-
-                            found = true;
-
-                            break;
-                        }
-                    }
-
-                    if (!found) return error.InvalidType;
-                }
-            },
-            else => return error.InvalidType,
-        }
-
-        const owned_values = try values.toOwnedSlice(self.allocator);
-        defer self.allocator.free(owned_values);
-
-        const value = c.LLVMConstStructInContext(self.llvm_context.llvm, owned_values.ptr, @intCast(owned_values.len), 0);
 
         return CodegenResult{
             .value = value,
@@ -1089,18 +1127,18 @@ pub const LLVMCodegen = struct {
 
     fn generate_member_expression(self: *LLVMCodegen, expression: *node_zig.MemberExpression, options: CodegenOptions) CodegenError!CodegenResult {
         const object_result = try self.generate_expression(expression.object, .{ .load = false });
-        const object = object_result.value;
+        const object_value = object_result.value;
 
         const object_type = expression.object.get_type();
 
-        var index: u32 = 0;
         var found = false;
 
+        var i: u32 = 0;
         switch (object_type) {
-            .Struct => |@"struct"| {
-                for (@"struct".fields, 0..) |field, i| {
+            .StructLiteral => |struct_literal| {
+                for (struct_literal.@"struct".fields, 0..) |field, j| {
                     if (std.mem.eql(u8, field.name, expression.property.value)) {
-                        index = @intCast(i);
+                        i = @intCast(j);
                         found = true;
                         break;
                     }
@@ -1112,10 +1150,10 @@ pub const LLVMCodegen = struct {
 
         if (!found) return error.VariableNotFound;
 
-        const ptr = c.LLVMBuildStructGEP2(self.llvm_context.builder, try self.converter.from_type(object_type), object, index, "");
+        const ptr = c.LLVMBuildStructGEP2(self.llvm_context.builder, try self.to_llvm_type(object_type), object_value, i, "");
 
         return CodegenResult{
-            .value = if (options.load) self.load(ptr, try self.converter.from_type(expression.type)) else ptr,
+            .value = if (options.load) self.load(ptr, try self.to_llvm_type(expression.type)) else ptr,
             .context = .{ .void = {} },
         };
     }
@@ -1137,7 +1175,7 @@ pub const LLVMCodegen = struct {
     }
 
     fn cast_type(self: *LLVMCodegen, value: c.LLVMValueRef, from: Type, to: Type) CodegenError!c.LLVMValueRef {
-        const to_type = try self.converter.from_type(to);
+        const to_type = try self.to_llvm_type(to);
 
         return switch (from) {
             .Integer => |from_int| switch (to) {
@@ -1189,9 +1227,26 @@ pub const LLVMCodegen = struct {
         };
     }
 
+    fn substitute_type(self: *LLVMCodegen, @"type": Type, substitutions: std.StringHashMap(Type)) Type {
+        return switch (@"type") {
+            .Named => |named| substitutions.get(named.name) orelse @"type",
+            .Pointer => |pointer| blk: {
+                const child = self.substitute_type(pointer.child.*, substitutions);
+                const child_ptr = memory_zig.create(self.allocator, Type, child) catch break :blk @"type";
+                break :blk Type{ .Pointer = .{ .child = child_ptr } };
+            },
+            .Array => |array| blk: {
+                const child = self.substitute_type(array.child.*, substitutions);
+                const child_ptr = memory_zig.create(self.allocator, Type, child) catch break :blk @"type";
+                break :blk Type{ .Array = .{ .child = child_ptr, .size = array.size } };
+            },
+            else => @"type",
+        };
+    }
+
     fn resolve_type(self: *LLVMCodegen, @"type": Type) Type {
-        if (self.converter.substitutions) |substitutions| {
-            return self.substitute_type_value(@"type", substitutions);
+        if (self.substitutions) |substitutions| {
+            return self.substitute_type(@"type", substitutions);
         }
 
         return @"type";

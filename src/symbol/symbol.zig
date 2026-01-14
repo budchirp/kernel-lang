@@ -1,10 +1,10 @@
 const std = @import("std");
-const node_zig = @import("../ast/node.zig");
 const type_zig = @import("../types/type.zig");
 
-const Visibility = node_zig.Visibility;
 const Type = type_zig.Type;
 const FunctionType = type_zig.FunctionType;
+
+pub const Visibility = enum { Public, Private };
 
 pub const TypeSymbol = struct {
     name: []const u8,
@@ -14,8 +14,16 @@ pub const TypeSymbol = struct {
     type: Type,
 
     pub fn dump(self: TypeSymbol, depth: usize) void {
-        std.debug.print("TypeSymbol(name: '{s}', visibility: {s}, type: \n", .{ self.name, @tagName(self.visibility) });
+        std.debug.print("TypeSymbol(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("name: '{s}',\n", .{self.name});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
+        type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
 
@@ -32,8 +40,16 @@ pub const FunctionSymbol = struct {
     type: FunctionType,
 
     pub fn dump(self: FunctionSymbol, depth: usize) void {
-        std.debug.print("FunctionSymbol(name: '{s}', visibility: {s}, type: \n", .{ self.name, @tagName(self.visibility) });
+        std.debug.print("FunctionSymbol(\n", .{});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("name: '{s}',\n", .{self.name});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
+        std.debug.print("\n", .{});
+        type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
 
@@ -56,11 +72,13 @@ pub const VariableSymbol = struct {
         type_zig.print_indent(depth + 1);
         std.debug.print("name: '{s}',\n", .{self.name});
         type_zig.print_indent(depth + 1);
+        std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+        type_zig.print_indent(depth + 1);
+        std.debug.print("is_mutable: {},\n", .{self.is_mutable});
+        type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
-        std.debug.print(",\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("is_mutable: {}, visibility: {s}\n", .{ self.is_mutable, @tagName(self.visibility) });
+        std.debug.print("\n", .{});
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }

@@ -14,6 +14,7 @@ const Compiler = compiler_zig.Compiler;
 
 pub const CLI = struct {
     allocator: std.mem.Allocator,
+
     args: []const [:0]u8,
 
     pub fn init(allocator: std.mem.Allocator, args: []const [:0]u8) CLI {

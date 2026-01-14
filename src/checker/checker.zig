@@ -24,7 +24,7 @@ const Logger = logger_zig.Logger;
 const ErrorKind = logger_zig.error_kind_zig.ErrorKind;
 const Source = source_zig.Source;
 const Position = position_zig.Position;
-const Visibility = node_zig.Visibility;
+const Visibility = symbol_zig.Visibility;
 
 const memory = memory_zig;
 
@@ -56,27 +56,35 @@ pub const Checker = struct {
 
     pub fn check(self: *Checker) CheckerError!void {
         for (self.program.statements.items) |*statement| {
-            try self.check_statement(statement);
+            _ = try self.check_statement(statement);
         }
     }
 
-    fn check_statement(self: *Checker, node: *Node) CheckerError!void {
-        switch (node.*) {
+    fn check_statement(self: *Checker, node: *Node) CheckerError!Type {
+        return switch (node.*) {
             .VariableStatement => |*v| try self.check_variable_statement(v),
-            .FunctionStatement => |*f| _ = try self.check_function_statement(f),
+            .FunctionStatement => |*f| blk: {
+                _ = try self.check_function_statement(f);
+                break :blk Type.void();
+            },
             .ReturnStatement => |*r| try self.check_return_statement(r),
-            .IfExpression => |*i| _ = try self.check_if_expression(i),
             .WhileStatement => |*w| try self.check_while_statement(w),
             .ForStatement => |*f| try self.check_for_statement(f),
             .BlockStatement => |*b| try self.check_block_statement(b),
             .StructStatement => |*s| try self.check_struct_statement(s),
             .ExternStatement => |*e| try self.check_extern_statement(e),
-            .ExpressionStatement => |*e| _ = try self.check_expression(e.expression),
+            .ExpressionStatement => |*e| blk: {
+                const @"type" = try self.check_expression(e.expression);
+
+                e.type = @"type";
+
+                break :blk e.type;
+            },
             else => {
                 self.context.logger.err(ErrorKind.TypeError, node.position(), "unknown statement");
                 return error.TypeError;
             },
-        }
+        };
     }
 
     fn check_expression(self: *Checker, node: *Node) CheckerError!Type {
@@ -94,14 +102,8 @@ pub const Checker = struct {
             .IfExpression => |*i| self.check_if_expression(i),
             .StructLiteral => |*s| self.check_struct_literal(s),
             .ArrayLiteral => |*a| self.check_array_literal(a),
-            .TypeExpression => |*t| {
-                return self.resolve_type(t.value);
-            },
-            .BlockStatement => |*b| {
-                try self.check_block_statement(b);
-
-                return Type.void();
-            },
+            .TypeExpression => |*t| self.check_type_expression(t),
+            .BlockStatement => |*b| self.check_block_statement(b),
             else => {
                 self.context.logger.err(ErrorKind.TypeError, node.position(), "unknown expression");
                 return error.TypeError;
@@ -109,20 +111,20 @@ pub const Checker = struct {
         };
     }
 
-    fn check_variable_statement(self: *Checker, statement: *node_zig.VariableStatement) CheckerError!void {
+    fn check_variable_statement(self: *Checker, statement: *node_zig.VariableStatement) CheckerError!Type {
         var @"type": Type = Type.unknown();
 
-        if (statement.type) |expression| {
-            @"type" = expression.value;
+        if (statement.type) |*type_expression| {
+            @"type" = try self.check_type_expression(type_expression);
         }
 
-        if (statement.initializer) |initializer| {
-            const init_type = try self.check_expression(initializer);
+        if (statement.initializer) |initializer_expression| {
+            const initializer_type = try self.check_expression(initializer_expression);
 
             if (@"type".is_unknown()) {
-                @"type" = init_type;
+                @"type" = initializer_type;
             } else {
-                if (!self.is_compatible(@"type", init_type)) {
+                if (!Type.is_compatible(@"type", initializer_type)) {
                     self.context.logger.err(ErrorKind.TypeError, statement.position, "type mismatch in variable declaration");
                     return error.TypeError;
                 }
@@ -130,7 +132,7 @@ pub const Checker = struct {
                 switch (@"type") {
                     .Array => |array| {
                         if (array.size == null) {
-                            @"type".Array.size = init_type.Array.size;
+                            @"type".Array.size = initializer_type.Array.size;
                         }
                     },
                     else => {},
@@ -157,6 +159,8 @@ pub const Checker = struct {
             .type = @"type",
             .is_mutable = statement.is_mut,
         });
+
+        return Type.void();
     }
 
     fn check_function_proto(self: *Checker, statement: *node_zig.FunctionProto) CheckerError!FunctionSymbol {
@@ -165,8 +169,8 @@ pub const Checker = struct {
 
         var generics = std.ArrayListUnmanaged(type_zig.GenericParameterType){};
         for (statement.generics.items) |generic| {
-            const constraint: ?*const Type = if (generic.constraint) |constraint|
-                try memory.create(self.allocator, Type, try self.resolve_type(constraint.value))
+            const constraint: ?*const Type = if (generic.constraint) |*constraint|
+                try memory.create(self.allocator, Type, try self.check_type_expression(@constCast(constraint)))
             else
                 null;
 
@@ -178,7 +182,11 @@ pub const Checker = struct {
             try current_scope.add_type(TypeSymbol{
                 .name = generic.name.value,
                 .visibility = Visibility.Private,
-                .type = Type{ .Named = .{ .name = generic.name.value } },
+                .type = Type{
+                    .Named = .{
+                        .name = generic.name.value,
+                    },
+                },
             });
         }
 
@@ -200,7 +208,7 @@ pub const Checker = struct {
                 }
             }
 
-            const resolved_type = try self.resolve_type_with_generics(parameter.type.value, statement.generics.items);
+            const resolved_type = try self.check_type_expression_with_generics(@constCast(&parameter.type), generics.items);
 
             try parameters.append(self.allocator, type_zig.FunctionParameterType{
                 .name = parameter.name.value,
@@ -208,7 +216,7 @@ pub const Checker = struct {
             });
         }
 
-        const return_type = try memory.create(self.allocator, Type, try self.resolve_type_with_generics(statement.return_type.value, statement.generics.items));
+        const return_type = try memory.create(self.allocator, Type, try self.check_type_expression_with_generics(@constCast(&statement.return_type), generics.items));
 
         const owned_parameters = try parameters.toOwnedSlice(self.allocator);
         const owned_generics = try generics.toOwnedSlice(self.allocator);
@@ -244,6 +252,7 @@ pub const Checker = struct {
         const scope = statement.body.scope;
 
         env.set_current_scope(scope);
+        defer env.set_current_scope(scope.parent);
 
         scope.type = .Function;
         scope.function = symbol;
@@ -257,30 +266,32 @@ pub const Checker = struct {
             });
         }
 
-        try self.check_block_statement(&statement.body);
-
-        env.set_current_scope(scope.parent);
+        _ = try self.check_block_statement(&statement.body);
 
         return symbol;
     }
 
-    fn check_return_statement(self: *Checker, statement: *node_zig.ReturnStatement) CheckerError!void {
+    fn check_return_statement(self: *Checker, statement: *node_zig.ReturnStatement) CheckerError!Type {
         const return_type = try self.check_expression(@constCast(statement.value));
 
         const env = self.program.env;
         const current_scope = env.current_scope;
 
-        if (current_scope.type != .Function) {
+        if (!current_scope.is_function()) {
             self.context.logger.err(ErrorKind.TypeError, statement.position, "return statement outside of function");
             return error.TypeError;
         }
 
         if (current_scope.function) |function| {
-            if (!self.is_compatible(return_type, function.type.return_type.*)) {
+            if (!Type.is_compatible(return_type, function.type.return_type.*)) {
                 self.context.logger.err(ErrorKind.TypeError, statement.position, "return type does not match function return type");
                 return error.TypeError;
             }
         }
+
+        statement.type = return_type;
+
+        return statement.type;
     }
 
     fn check_if_expression(self: *Checker, expression: *node_zig.IfExpression) CheckerError!Type {
@@ -295,7 +306,7 @@ pub const Checker = struct {
         if (expression.alternative) |alternative| {
             const alternative_type = try self.check_expression(alternative);
 
-            if (!self.is_compatible(consequence_type, alternative_type)) {
+            if (!Type.is_compatible(consequence_type, alternative_type)) {
                 self.context.logger.err(ErrorKind.TypeError, expression.position, "if branches have incompatible types");
                 return error.TypeError;
             }
@@ -310,19 +321,21 @@ pub const Checker = struct {
         return expression.type;
     }
 
-    fn check_while_statement(self: *Checker, statement: *node_zig.WhileStatement) CheckerError!void {
+    fn check_while_statement(self: *Checker, statement: *node_zig.WhileStatement) CheckerError!Type {
         const condition_type = try self.check_expression(statement.condition);
         if (condition_type != .Boolean) {
             self.context.logger.err(ErrorKind.TypeError, statement.position, "expected boolean type");
             return error.TypeError;
         }
 
-        try self.check_block_statement(&statement.body);
+        _ = try self.check_block_statement(&statement.body);
+
+        return Type.void();
     }
 
-    fn check_for_statement(self: *Checker, statement: *node_zig.ForStatement) CheckerError!void {
+    fn check_for_statement(self: *Checker, statement: *node_zig.ForStatement) CheckerError!Type {
         if (statement.init) |initializer| {
-            try self.check_statement(initializer);
+            _ = try self.check_expression(initializer);
         }
 
         if (statement.condition) |condition| {
@@ -337,31 +350,38 @@ pub const Checker = struct {
             _ = try self.check_expression(update);
         }
 
-        try self.check_block_statement(&statement.body);
+        _ = try self.check_block_statement(&statement.body);
+
+        return Type.void();
     }
 
-    fn check_block_statement(self: *Checker, block: *node_zig.BlockStatement) CheckerError!void {
+    fn check_block_statement(self: *Checker, block: *node_zig.BlockStatement) CheckerError!Type {
         const env = self.program.env;
 
         const scope = block.scope;
 
         env.set_current_scope(scope);
 
+        var last: Type = undefined;
         for (block.statements.items) |*statement| {
-            try self.check_statement(statement);
+            last = try self.check_statement(statement);
         }
 
+        block.type = last;
+
         env.set_current_scope(scope.parent);
+
+        return last;
     }
 
-    fn check_struct_statement(self: *Checker, statement: *node_zig.StructStatement) CheckerError!void {
+    fn check_struct_statement(self: *Checker, statement: *node_zig.StructStatement) CheckerError!Type {
         const env = self.program.env;
         const current_scope = env.current_scope;
 
         var generics = std.ArrayListUnmanaged(type_zig.GenericParameterType){};
         for (statement.generics.items) |generic| {
-            const constraint: ?*const Type = if (generic.constraint) |constraint|
-                try memory.create(self.allocator, Type, try self.resolve_type(constraint.value))
+            const constraint: ?*const Type = if (generic.constraint) |*constraint|
+                try memory.create(self.allocator, Type, try self.check_type_expression(@constCast(constraint)))
             else
                 null;
 
@@ -388,7 +408,7 @@ pub const Checker = struct {
         }
 
         for (statement.fields.items) |*field| {
-            const field_type = try self.resolve_type(field.type.value);
+            const field_type = try self.check_type_expression_with_generics(@constCast(&field.type), generics.items);
 
             try fields.append(self.allocator, type_zig.StructFieldType{
                 .name = field.name.value,
@@ -399,14 +419,21 @@ pub const Checker = struct {
         const owned_generics = try generics.toOwnedSlice(self.allocator);
         const owned_fields = try fields.toOwnedSlice(self.allocator);
 
+        const struct_type = type_zig.StructType{
+            .name = statement.name.value,
+            .generics = owned_generics,
+            .fields = owned_fields,
+        };
+
+        statement.type = struct_type;
+
         try current_scope.add_type(TypeSymbol{
             .name = statement.name.value,
             .visibility = statement.visibility,
-            .type = Type{ .Struct = type_zig.StructType{
-                .generics = owned_generics,
-                .fields = owned_fields,
-            } },
+            .type = Type{ .Struct = struct_type },
         });
+
+        return Type.void();
     }
 
     fn check_array_literal(self: *Checker, literal: *node_zig.ArrayLiteral) CheckerError!Type {
@@ -415,7 +442,7 @@ pub const Checker = struct {
         for (literal.elements.items[1..]) |*element| {
             const element_type = try self.check_expression(element);
 
-            if (!self.is_compatible(array_type, element_type)) {
+            if (!Type.is_compatible(array_type, element_type)) {
                 self.context.logger.err(ErrorKind.TypeError, literal.position, "array element type mismatch");
                 return error.TypeError;
             }
@@ -426,7 +453,7 @@ pub const Checker = struct {
         return literal.type;
     }
 
-    fn check_extern_statement(self: *Checker, statement: *node_zig.ExternStatement) CheckerError!void {
+    fn check_extern_statement(self: *Checker, statement: *node_zig.ExternStatement) CheckerError!Type {
         const env = self.program.env;
         const current_scope = env.current_scope;
 
@@ -443,6 +470,8 @@ pub const Checker = struct {
                 });
             },
         }
+
+        return Type.void();
     }
 
     fn check_identifier(self: *Checker, identifier: *node_zig.Identifier) CheckerError!Type {
@@ -505,12 +534,12 @@ pub const Checker = struct {
 
         const result_type = switch (expression.operator.type) {
             .Plus, .Minus, .Asterisk, .Divide, .Modulo => blk: {
-                if (!self.is_numeric(left_type) or !self.is_numeric(right_type)) {
+                if (!left_type.is_numeric() or !right_type.is_numeric()) {
                     self.context.logger.err(ErrorKind.TypeError, expression.position, "expected numeric types");
                     return error.TypeError;
                 }
 
-                if (!self.is_compatible(left_type, right_type)) {
+                if (!Type.is_compatible(left_type, right_type)) {
                     self.context.logger.err(ErrorKind.TypeError, expression.position, "incompatible types in binary expression");
                     return error.TypeError;
                 }
@@ -527,7 +556,7 @@ pub const Checker = struct {
                 break :blk Type{ .Boolean = {} };
             },
             .Assign => blk: {
-                if (!self.is_compatible(left_type, right_type)) {
+                if (!Type.is_compatible(left_type, right_type)) {
                     self.context.logger.err(ErrorKind.TypeError, expression.position, "assignment requires compatible types");
                     return error.TypeError;
                 }
@@ -548,7 +577,7 @@ pub const Checker = struct {
 
         const result_type = switch (expression.operator.type) {
             .Minus => blk: {
-                if (!self.is_numeric(operand_type)) {
+                if (!operand_type.is_numeric()) {
                     self.context.logger.err(ErrorKind.TypeError, expression.position, "expected numeric type");
                     return error.TypeError;
                 }
@@ -589,10 +618,15 @@ pub const Checker = struct {
         const object_type = try self.check_expression(expression.object);
 
         const property_type = switch (object_type) {
-            .Struct => |@"struct"| blk: {
-                for (@"struct".fields) |field| {
+            .StructLiteral => |struct_literal| blk: {
+                var substitutions = std.StringHashMap(Type).init(self.allocator);
+                for (struct_literal.@"struct".*.generics, struct_literal.generics) |generic_parameter, generic_argument| {
+                    try substitutions.put(generic_parameter.name, generic_argument.type.*);
+                }
+
+                for (struct_literal.@"struct".*.fields) |field| {
                     if (std.mem.eql(u8, field.name, expression.property.value)) {
-                        break :blk field.type.*;
+                        break :blk try self.substitute_type(field.type.*, substitutions);
                     }
                 }
 
@@ -626,6 +660,9 @@ pub const Checker = struct {
             const name = expression.callee.Identifier.value;
             if (current_scope.lookup_function(name)) |symbols| {
                 function = self.find_matching_overload(symbols, arguments.items, expression.generics.items);
+                if (function) |func| {
+                    expression.callee.Identifier.type = Type{ .Function = func };
+                }
             }
         }
 
@@ -650,39 +687,35 @@ pub const Checker = struct {
                 }
             }
 
+            if (expression.generics.items.len != func.generics.len) {
+                self.context.logger.err(ErrorKind.TypeError, expression.position, "generic argument count mismatch");
+                return error.TypeError;
+            }
+
             var substitutions = std.StringHashMap(Type).init(self.allocator);
             defer substitutions.deinit();
+            for (func.generics, expression.generics.items) |generic_parameter, *generic_argument| {
+                const resolved = try self.check_type_expression(@constCast(&generic_argument.type));
 
-            if (expression.generics.items.len > 0 and func.generics.len > 0) {
-                if (expression.generics.items.len != func.generics.len) {
-                    self.context.logger.err(ErrorKind.TypeError, expression.position, "generic argument count mismatch");
-                    return error.TypeError;
-                }
-
-                for (func.generics, expression.generics.items) |generic, *argument| {
-                    const resolved = try self.resolve_type(argument.type.value);
-
-                    if (generic.constraint) |constraint| {
-                        if (!self.is_compatible(resolved, constraint.*)) {
-                            self.context.logger.err(ErrorKind.TypeError, expression.position, "type does not satisfy constraint");
-                            return error.TypeError;
-                        }
+                if (generic_parameter.constraint) |constraint| {
+                    if (!Type.is_compatible(resolved, constraint.*)) {
+                        self.context.logger.err(ErrorKind.TypeError, expression.position, "type does not satisfy constraint");
+                        return error.TypeError;
                     }
-
-                    try substitutions.put(generic.name, resolved);
                 }
+
+                try substitutions.put(generic_parameter.name, resolved);
             }
 
             for (0..required_parameters) |i| {
                 const parameter_type = try self.substitute_type(func.parameters[i].type.*, substitutions);
 
-                if (!self.is_compatible(parameter_type, arguments.items[i])) {
+                if (!Type.is_compatible(parameter_type, arguments.items[i])) {
                     self.context.logger.err(ErrorKind.TypeError, expression.position, "argument type mismatch");
                     return error.TypeError;
                 }
             }
 
-            expression.callee.Identifier.type = Type{ .Function = func };
             expression.type = try self.substitute_type(func.return_type.*, substitutions);
 
             return expression.type;
@@ -698,6 +731,8 @@ pub const Checker = struct {
         arguments: []const Type,
         generics: []node_zig.GenericArgument,
     ) ?type_zig.FunctionType {
+        _ = self;
+
         var best_match: ?type_zig.FunctionType = null;
         var best_score: usize = 0;
 
@@ -709,11 +744,11 @@ pub const Checker = struct {
             var exact_matches: usize = 0;
 
             for (symbol.type.parameters, arguments) |param, arg_type| {
-                if (!self.is_compatible(param.type.*, arg_type)) {
+                if (!Type.is_compatible(param.type.*, arg_type)) {
                     matches = false;
                     break;
                 }
-                if (self.types_equal(param.type.*, arg_type)) {
+                if (Type.equal(param.type.*, arg_type)) {
                     exact_matches += 1;
                 }
             }
@@ -747,74 +782,134 @@ pub const Checker = struct {
     }
 
     fn check_struct_literal(self: *Checker, literal: *node_zig.StructLiteral) CheckerError!Type {
-        const struct_type = try self.check_expression(literal.@"struct");
+        const env = self.program.env;
+        const current_scope = env.current_scope;
 
-        switch (struct_type) {
-            .Struct => |@"struct"| {
-                for (literal.fields.items) |field| {
-                    const expression_type = try self.check_expression(field.value);
+        const type_symbol = current_scope.lookup_type(literal.name.value);
+        if (type_symbol == null) {
+            self.context.logger.err(ErrorKind.TypeError, literal.position, "struct not found");
+            return error.TypeError;
+        }
 
-                    var found = false;
+        const struct_type = type_symbol.?.type.Struct;
 
-                    for (@"struct".fields) |field_type| {
-                        if (std.mem.eql(u8, field_type.name, field.name.value)) {
-                            found = true;
+        if (literal.generics.items.len != struct_type.generics.len) {
+            self.context.logger.err(ErrorKind.TypeError, literal.position, "generic argument count mismatch");
+            return error.TypeError;
+        }
 
-                            if (!self.is_compatible(field_type.type.*, expression_type)) {
-                                self.context.logger.err(ErrorKind.TypeError, literal.position, "field type mismatch");
-                                return error.TypeError;
-                            }
+        var substitutions = std.StringHashMap(Type).init(self.allocator);
+        defer substitutions.deinit();
 
-                            break;
-                        }
-                    }
+        for (literal.generics.items, 0..) |*generic_argument, i| {
+            const resolved = try self.check_type_expression(@constCast(&generic_argument.type));
+            const name = if (generic_argument.name) |n| n.value else struct_type.generics[i].name;
+            try substitutions.put(name, resolved);
+        }
 
-                    if (!found) {
-                        self.context.logger.err(ErrorKind.TypeError, literal.position, "unknown field");
+        var fields = std.ArrayListUnmanaged(type_zig.StructFieldType){};
+        for (struct_type.fields) |field_type| {
+            const substituted = try self.substitute_type(field_type.type.*, substitutions);
+            try fields.append(self.allocator, type_zig.StructFieldType{
+                .name = field_type.name,
+                .type = try memory.create(self.allocator, Type, substituted),
+            });
+        }
+
+        var generic_parameters = std.ArrayListUnmanaged(type_zig.GenericParameterType){};
+        for (struct_type.generics) |generic| {
+            try generic_parameters.append(self.allocator, generic);
+        }
+
+        var generic_arguments = std.ArrayListUnmanaged(type_zig.GenericArgumentType){};
+        for (literal.generics.items) |generic_argument| {
+            try generic_arguments.append(self.allocator, type_zig.GenericArgumentType{
+                .type = try memory.create(self.allocator, Type, try self.check_type_expression(@constCast(&generic_argument.type))),
+            });
+        }
+
+        const owned_generic_parameters = try generic_parameters.toOwnedSlice(self.allocator);
+        const owned_generic_arguments = try generic_arguments.toOwnedSlice(self.allocator);
+        const owned_fields = try fields.toOwnedSlice(self.allocator);
+
+        for (literal.fields.items) |field| {
+            const expression_type = try self.check_expression(field.value);
+
+            var found = false;
+
+            for (owned_fields) |field_type| {
+                if (std.mem.eql(u8, field_type.name, field.name.value)) {
+                    found = true;
+
+                    if (!Type.is_compatible(field_type.type.*, expression_type)) {
+                        self.context.logger.err(ErrorKind.TypeError, literal.position, "field type mismatch");
                         return error.TypeError;
                     }
                 }
-            },
-            else => {
-                self.context.logger.err(ErrorKind.TypeError, literal.position, "expected struct type");
+            }
+
+            if (!found) {
+                self.context.logger.err(ErrorKind.TypeError, literal.position, "unknown field");
                 return error.TypeError;
-            },
+            }
         }
 
-        literal.type = struct_type;
+        literal.type = type_zig.StructLiteralType{
+            .@"struct" = try memory.create(self.allocator, type_zig.StructType, type_zig.StructType{
+                .name = struct_type.name,
+                .generics = owned_generic_parameters,
+                .fields = owned_fields,
+            }),
+            .generics = owned_generic_arguments,
+        };
 
-        return literal.type;
+        return Type{ .StructLiteral = literal.type.? };
     }
 
-    fn resolve_type(self: *Checker, @"type": Type) CheckerError!Type {
-        return self.resolve_type_with_generics(@"type", &[_]node_zig.GenericParameter{});
+    fn check_type_expression(self: *Checker, expression: *node_zig.TypeExpression) CheckerError!Type {
+        return self.check_type_expression_with_generics(expression, &[_]type_zig.GenericParameterType{});
     }
 
-    fn resolve_type_with_generics(self: *Checker, @"type": Type, generics: []const node_zig.GenericParameter) CheckerError!Type {
+    fn check_type_expression_with_generics(self: *Checker, expression: *node_zig.TypeExpression, generics: []const type_zig.GenericParameterType) CheckerError!Type {
+        const @"type" = try self.resolve_type(expression.value, generics);
+
+        expression.value = @"type";
+
+        return @"type";
+    }
+
+    fn resolve_type(self: *Checker, @"type": Type, generics: []const type_zig.GenericParameterType) CheckerError!Type {
         return switch (@"type") {
             .Named => |named| blk: {
                 for (generics) |generic| {
-                    if (std.mem.eql(u8, generic.name.value, named.name)) {
+                    if (std.mem.eql(u8, generic.name, named.name)) {
                         break :blk @"type";
                     }
                 }
 
-                if (self.program.env.current_scope.lookup_type(named.name)) |symbol| {
-                    break :blk symbol.type;
+                const symbol = self.program.env.current_scope.lookup_type(named.name);
+                if (symbol == null) {
+                    break :blk Type.unknown();
                 }
 
-                break :blk Type.unknown();
+                return switch (symbol.?.type) {
+                    .Struct => |struct_type| Type{ .StructLiteral = .{
+                        .@"struct" = try memory.create(self.allocator, type_zig.StructType, struct_type),
+                        .generics = named.generics,
+                    } },
+                    else => symbol.?.type,
+                };
             },
             .Struct => |@"struct"| blk: {
                 _ = @"struct";
                 break :blk @"type";
             },
             .Pointer => |pointer| blk: {
-                const child = try self.resolve_type_with_generics(pointer.child.*, generics);
+                const child = try self.resolve_type(pointer.child.*, generics);
                 break :blk Type{ .Pointer = type_zig.PointerType{ .child = try memory.create(self.allocator, Type, child) } };
             },
             .Array => |array| blk: {
-                const child = try self.resolve_type_with_generics(array.child.*, generics);
+                const child = try self.resolve_type(array.child.*, generics);
                 break :blk Type{ .Array = type_zig.ArrayType{ .child = try memory.create(self.allocator, Type, child), .size = array.size } };
             },
             else => @"type",
@@ -832,99 +927,6 @@ pub const Checker = struct {
                 .size = array.size,
             } },
             else => @"type",
-        };
-    }
-
-    fn is_compatible(self: *Checker, expected: Type, actual: Type) bool {
-        if (expected.is_unknown() or actual.is_unknown()) {
-            return true;
-        }
-
-        if (@as(std.meta.Tag(Type), expected) != @as(std.meta.Tag(Type), actual)) {
-            if (expected == .Named or actual == .Named) {
-                if (expected == .Integer and actual == .Integer) return true;
-                if (expected == .Float and actual == .Float) return true;
-                if (expected == .Named and actual == .Named) return true;
-                if (expected == .Named and actual == .Integer) return true;
-                if (expected == .Integer and actual == .Named) return true;
-                if (expected == .Named and actual == .Float) return true;
-                if (expected == .Float and actual == .Named) return true;
-
-                return false;
-            }
-            return false;
-        }
-
-        return switch (expected) {
-            .Integer => |expected_int| blk: {
-                const actual_int = actual.Integer;
-                if (expected_int.is_unsigned != actual_int.is_unsigned) break :blk false;
-
-                break :blk actual_int.size <= expected_int.size;
-            },
-            .Float => |expected_float| blk: {
-                const actual_float = actual.Float;
-
-                break :blk actual_float.size <= expected_float.size;
-            },
-            .String => true,
-            .Boolean => true,
-            .Void => true,
-            .Pointer => |pointer| {
-                if (actual != .Pointer) return false;
-
-                if (pointer.child.* == .Void) return true;
-
-                return self.is_compatible(pointer.child.*, actual.Pointer.child.*);
-            },
-            .Array => |array| {
-                if (actual != .Array) return false;
-
-                return self.is_compatible(array.child.*, actual.Array.child.*);
-            },
-            .Struct => |@"struct"| {
-                if (actual != .Struct) return false;
-
-                if (@"struct".fields.len != actual.Struct.fields.len) return false;
-
-                for (@"struct".fields, 0..) |field, i| {
-                    if (!std.mem.eql(u8, field.name, actual.Struct.fields[i].name)) return false;
-                    if (!self.is_compatible(field.type.*, actual.Struct.fields[i].type.*)) return false;
-                }
-
-                return true;
-            },
-            .Function => |function| {
-                if (actual != .Function) return false;
-
-                if (!self.is_compatible(function.return_type.*, actual.Function.return_type.*)) return false;
-
-                if (function.parameters.len != actual.Function.parameters.len) return false;
-
-                for (function.parameters, 0..) |p, i| {
-                    if (!self.is_compatible(p.type.*, actual.Function.parameters[i].type.*)) return false;
-                }
-
-                return true;
-            },
-            .Unknown => true,
-            .Named => true,
-        };
-    }
-
-    fn is_numeric(self: *Checker, @"type": Type) bool {
-        _ = self;
-        return @"type" == .Integer or @"type" == .Float or @"type".is_unknown() or @"type" == .Named;
-    }
-
-    fn types_equal(self: *Checker, a: Type, b: Type) bool {
-        _ = self;
-        if (@as(std.meta.Tag(Type), a) != @as(std.meta.Tag(Type), b)) return false;
-
-        return switch (a) {
-            .Integer => |ai| ai.size == b.Integer.size and ai.is_unsigned == b.Integer.is_unsigned,
-            .Float => |af| af.size == b.Float.size,
-            else => true,
         };
     }
 };
