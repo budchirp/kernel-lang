@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const memory_zig = @import("../utils/memory.zig");
 const symbol_zig = @import("symbol.zig");
 const scope_zig = @import("scope.zig");
 const node_zig = @import("../ast/node.zig");
@@ -12,6 +13,7 @@ const VariableSymbol = symbol_zig.VariableSymbol;
 const StringContext = std.hash_map.StringContext;
 const Visibility = symbol_zig.Visibility;
 const Type = type_zig.Type;
+const memory = memory_zig;
 
 pub const Env = struct {
     allocator: std.mem.Allocator,
@@ -19,52 +21,16 @@ pub const Env = struct {
     current_scope: *Scope,
 
     pub fn init(allocator: std.mem.Allocator) !Env {
-        const scope = try allocator.create(Scope);
-        scope.* = try Scope.init(allocator, "global", null);
-
+        const scope = try memory.create(allocator, Scope, try Scope.init(allocator, "global", null));
         scope.type = .Global;
 
-        var env = Env{
+        return Env{
             .allocator = allocator,
             .current_scope = scope,
         };
-
-        try env.builtin_types();
-
-        return env;
-    }
-
-    pub fn deinit(self: *Env) void {
-        _ = self;
     }
 
     pub fn set_current_scope(self: *Env, scope: ?*Scope) void {
         self.current_scope = scope orelse self.current_scope;
-    }
-
-    fn builtin_types(self: *Env) !void {
-        const pairs = [_]struct { name: []const u8, t: Type }{
-            .{ .name = "string", .t = Type{ .String = {} } },
-            .{ .name = "boolean", .t = Type{ .Boolean = {} } },
-            .{ .name = "void", .t = Type{ .Void = {} } },
-            .{ .name = "i8", .t = Type{ .Integer = .{ .is_unsigned = false, .size = 8 } } },
-            .{ .name = "i16", .t = Type{ .Integer = .{ .is_unsigned = false, .size = 16 } } },
-            .{ .name = "i32", .t = Type{ .Integer = .{ .is_unsigned = false, .size = 32 } } },
-            .{ .name = "i64", .t = Type{ .Integer = .{ .is_unsigned = false, .size = 64 } } },
-            .{ .name = "u8", .t = Type{ .Integer = .{ .is_unsigned = true, .size = 8 } } },
-            .{ .name = "u16", .t = Type{ .Integer = .{ .is_unsigned = true, .size = 16 } } },
-            .{ .name = "u32", .t = Type{ .Integer = .{ .is_unsigned = true, .size = 32 } } },
-            .{ .name = "u64", .t = Type{ .Integer = .{ .is_unsigned = true, .size = 64 } } },
-            .{ .name = "f32", .t = Type{ .Float = .{ .size = 32 } } },
-            .{ .name = "f64", .t = Type{ .Float = .{ .size = 64 } } },
-        };
-
-        for (pairs) |pair| {
-            try self.current_scope.add_type(TypeSymbol{
-                .name = pair.name,
-                .visibility = Visibility.Private,
-                .type = pair.t,
-            });
-        }
     }
 };

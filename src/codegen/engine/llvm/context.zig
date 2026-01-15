@@ -7,6 +7,7 @@ pub const LLVMCodegenContext = struct {
     module: c.LLVMModuleRef,
     builder: c.LLVMBuilderRef,
     target_machine: ?c.LLVMTargetMachineRef = null,
+    data_layout: ?c.LLVMTargetDataRef = null,
 
     pub fn init(name: [:0]const u8) !LLVMCodegenContext {
         const llvm = c.LLVMContextCreate();
@@ -49,6 +50,8 @@ pub const LLVMCodegenContext = struct {
         c.LLVMSetTarget(self.module, target_triple);
         const layout = c.LLVMCreateTargetDataLayout(self.target_machine.?);
         c.LLVMSetModuleDataLayout(self.module, layout);
+
+        self.data_layout = layout;
     }
 
     pub fn emit_to_file(self: *LLVMCodegenContext, path: [:0]const u8) !void {

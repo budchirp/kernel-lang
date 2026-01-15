@@ -11,6 +11,7 @@ const symbol_zig = @import("../../../symbol/symbol.zig");
 const scope_zig = @import("../../../symbol/scope.zig");
 const mono_zig = @import("../../monomorphization.zig");
 const memory_zig = @import("../../../utils/memory.zig");
+const builtin_zig = @import("../../../symbol/builtin.zig");
 
 const Type = type_zig.Type;
 const Node = node_zig.Node;
@@ -311,7 +312,7 @@ pub const LLVMCodegen = struct {
         c.LLVMPositionBuilderAtEnd(self.llvm_context.builder, merge_block);
 
         return CodegenResult{
-            .value = c.LLVMGetUndef(self.void()),
+            .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
             .context = .{ .void = {} },
         };
     }
@@ -332,6 +333,23 @@ pub const LLVMCodegen = struct {
 
         return CodegenResult{
             .value = last,
+            .context = .{ .void = {} },
+        };
+    }
+
+    fn generate_builtin_call(self: *LLVMCodegen, name: []const u8, expression: *CallExpression) CodegenError!CodegenResult {
+        if (std.mem.eql(u8, name, "sizeof")) {
+            const llvm_type = try self.to_llvm_type(expression.arguments.items[0].type);
+
+            const type_size = c.LLVMSizeOfTypeInBits(self.llvm_context.data_layout.?, llvm_type);
+            return CodegenResult{
+                .value = c.LLVMConstInt(c.LLVMInt64TypeInContext(self.llvm_context.llvm), type_size, @intFromBool(false)),
+                .context = .{ .void = {} },
+            };
+        }
+
+        return CodegenResult{
+            .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
             .context = .{ .void = {} },
         };
     }
@@ -416,21 +434,27 @@ pub const LLVMCodegen = struct {
             if (expression.generics.items.len > 0 and self.mono_cache.is_generic_function(name)) {
                 return self.generate_monomorphized_call(expression, name);
             }
+
+            for (builtin_zig.builtin_functions) |builtin_function| {
+                if (std.mem.eql(u8, name, builtin_function)) {
+                    return try self.generate_builtin_call(name, expression);
+                }
+            }
         }
 
         const llvm_function = try self.generate_expression(expression.callee, .{});
 
-        const function_type = switch (llvm_function.context) {
-            .function => |f| f.type,
+        const function_symbol = switch (llvm_function.context) {
+            .function => |symbol| symbol,
             else => return error.InvalidType,
         };
 
         const is_llvm_variadic = c.LLVMIsFunctionVarArg(c.LLVMGlobalGetValueType(llvm_function.value)) != 0;
 
-        var llvm_arguments = try self.build_call_arguments(expression.arguments.items, function_type.parameters, function_type.is_variadic, is_llvm_variadic);
+        var llvm_arguments = try self.build_call_arguments(expression.arguments.items, function_symbol.type.parameters, function_symbol.type.is_variadic, is_llvm_variadic);
         defer llvm_arguments.deinit(self.allocator);
 
-        const llvm_function_type = try self.build_llvm_function_type(function_type.parameters, function_type.return_type.*, function_type.is_variadic, is_llvm_variadic);
+        const llvm_function_type = try self.build_llvm_function_type(function_symbol.type.parameters, function_symbol.type.return_type.*, function_symbol.type.is_variadic, is_llvm_variadic);
 
         return CodegenResult{
             .value = c.LLVMBuildCall2(self.llvm_context.builder, llvm_function_type, llvm_function.value, llvm_arguments.items.ptr, @intCast(llvm_arguments.items.len), ""),
@@ -566,7 +590,7 @@ pub const LLVMCodegen = struct {
         c.LLVMStructSetBody(llvm_struct_type, owned_llvm_fields.ptr, @intCast(owned_llvm_fields.len), 0);
 
         return CodegenResult{
-            .value = c.LLVMGetUndef(self.void()),
+            .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
             .context = .{ .@"struct" = llvm_struct_type },
         };
     }
@@ -576,7 +600,7 @@ pub const LLVMCodegen = struct {
             try self.mono_cache.register_struct(statement.name.value, statement);
 
             return CodegenResult{
-                .value = c.LLVMGetUndef(self.void()),
+                .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
                 .context = .{ .void = {} },
             };
         }
@@ -632,7 +656,7 @@ pub const LLVMCodegen = struct {
         _ = c.LLVMVerifyFunction(llvm_function, c.LLVMAbortProcessAction);
 
         return CodegenResult{
-            .value = c.LLVMGetUndef(self.void()),
+            .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
             .context = .{ .void = {} },
         };
     }
@@ -678,7 +702,7 @@ pub const LLVMCodegen = struct {
             try self.mono_cache.register_function(statement.proto.name.value, statement);
 
             return CodegenResult{
-                .value = c.LLVMGetUndef(self.void()),
+                .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
                 .context = .{ .void = {} },
             };
         }
@@ -808,7 +832,7 @@ pub const LLVMCodegen = struct {
         try self.variables.put(name, ptr);
 
         return CodegenResult{
-            .value = c.LLVMGetUndef(self.void()),
+            .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
             .context = .{ .void = {} },
         };
     }
@@ -829,6 +853,21 @@ pub const LLVMCodegen = struct {
 
         if (node.type == .Function) {
             const function_type = node.type.Function;
+
+            const function_symbol = FunctionSymbol{
+                .name = node.value,
+                .visibility = .Public,
+                .type = function_type,
+            };
+
+            for (builtin_zig.builtin_functions) |builtin_function| {
+                if (std.mem.eql(u8, node.value, builtin_function)) {
+                    return CodegenResult{
+                        .value = c.LLVMGetUndef(try self.to_llvm_type(Type.void())),
+                        .context = .{ .function = function_symbol },
+                    };
+                }
+            }
 
             const parameter_count = if (function_type.is_variadic and function_type.parameters.len > 0) function_type.parameters.len - 1 else function_type.parameters.len;
 
@@ -859,11 +898,7 @@ pub const LLVMCodegen = struct {
 
             return CodegenResult{
                 .value = llvm_function,
-                .context = .{ .function = FunctionSymbol{
-                    .name = node.value,
-                    .visibility = .Public,
-                    .type = function_type,
-                } },
+                .context = .{ .function = function_symbol },
             };
         }
 
@@ -1168,10 +1203,6 @@ pub const LLVMCodegen = struct {
 
     fn load(self: *LLVMCodegen, ptr: c.LLVMValueRef, @"type": c.LLVMTypeRef) c.LLVMValueRef {
         return c.LLVMBuildLoad2(self.llvm_context.builder, @"type", ptr, "");
-    }
-
-    fn @"void"(self: *LLVMCodegen) c.LLVMTypeRef {
-        return c.LLVMVoidTypeInContext(self.llvm_context.llvm);
     }
 
     fn cast_type(self: *LLVMCodegen, value: c.LLVMValueRef, from: Type, to: Type) CodegenError!c.LLVMValueRef {

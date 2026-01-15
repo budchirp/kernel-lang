@@ -14,8 +14,12 @@ const scope_zig = @import("../symbol/scope.zig");
 const context_zig = @import("../compiler/context.zig");
 const memory_zig = @import("../utils/memory.zig");
 const symbol_zig = @import("../symbol/symbol.zig");
+const builtin_zig = @import("../symbol/builtin.zig");
+const attribute_zig = @import("../ast/attribute.zig");
 
+const Attribute = attribute_zig.Attribute;
 const Visibility = symbol_zig.Visibility;
+const Builtin = builtin_zig.Builtin;
 const Lexer = lexer_zig.Lexer;
 const Token = token_zig.Token;
 const Env = env_zig.Env;
@@ -88,6 +92,9 @@ pub const Parser = struct {
         context: CompilerContext,
     ) !Parser {
         const env = try memory.create(allocator, Env, try Env.init(allocator));
+
+        const builtin = try memory.create(allocator, Builtin, try Builtin.init(allocator, env));
+        try builtin.define();
 
         var parser = Parser{
             .allocator = allocator,
@@ -692,6 +699,7 @@ pub const Parser = struct {
                 .position = position,
                 .proto = proto,
                 .body = body,
+                .attributes = std.ArrayListUnmanaged(attribute_zig.FunctionAttribute){},
             },
         };
     }
@@ -788,6 +796,7 @@ pub const Parser = struct {
                 .parent = parent,
                 .generics = generics,
                 .fields = fields,
+                .attributes = std.ArrayListUnmanaged(attribute_zig.StructAttribute){},
             },
         };
     }

@@ -6,6 +6,7 @@ const type_zig = @import("../types/type.zig");
 const scope_zig = @import("../symbol/scope.zig");
 const token_zig = @import("../lexer/token/token.zig");
 const symbol_zig = @import("../symbol/symbol.zig");
+const attribute_zig = @import("attribute.zig");
 
 const Position = position_zig.Position;
 const Token = token_zig.Token;
@@ -13,6 +14,7 @@ const TokenType = token_type_zig.TokenType;
 const Type = type_zig.Type;
 const Scope = scope_zig.Scope;
 const Visibility = symbol_zig.Visibility;
+const Attribute = attribute_zig.Attribute;
 
 pub const Identifier = struct {
     position: Position,
@@ -20,12 +22,9 @@ pub const Identifier = struct {
 
     value: []const u8,
 
-    pub fn deinit(self: *Identifier) void {
-        _ = self;
-    }
-
     pub fn dump(self: Identifier, depth: usize) void {
         _ = depth;
+
         std.debug.print("Identifier(value: '{s}')", .{self.value});
     }
 };
@@ -36,12 +35,9 @@ pub const NumberLiteral = struct {
 
     value: []const u8,
 
-    pub fn deinit(self: *NumberLiteral) void {
-        _ = self;
-    }
-
     pub fn dump(self: NumberLiteral, depth: usize) void {
         _ = depth;
+
         std.debug.print("NumberLiteral(value: {s})", .{self.value});
     }
 };
@@ -52,12 +48,9 @@ pub const FloatLiteral = struct {
 
     value: []const u8,
 
-    pub fn deinit(self: *FloatLiteral) void {
-        _ = self;
-    }
-
     pub fn dump(self: FloatLiteral, depth: usize) void {
         _ = depth;
+
         std.debug.print("FloatLiteral(value: {s})", .{self.value});
     }
 };
@@ -70,12 +63,9 @@ pub const StringLiteral = struct {
 
     value: []const u8,
 
-    pub fn deinit(self: *StringLiteral) void {
-        self.allocator.free(self.value);
-    }
-
     pub fn dump(self: StringLiteral, depth: usize) void {
         _ = depth;
+
         std.debug.print("StringLiteral(value: \"{s}\")", .{self.value});
     }
 };
@@ -86,12 +76,9 @@ pub const BooleanLiteral = struct {
 
     value: bool,
 
-    pub fn deinit(self: *BooleanLiteral) void {
-        _ = self;
-    }
-
     pub fn dump(self: BooleanLiteral, depth: usize) void {
         _ = depth;
+
         std.debug.print("BooleanLiteral(value: {})", .{self.value});
     }
 };
@@ -105,11 +92,8 @@ pub const StructLiteralField = struct {
     value: *Node,
 
     pub fn deinit(self: *StructLiteralField) void {
-        self.name.deinit();
-
-        const value_pointer = @constCast(self.value);
-        value_pointer.deinit();
-        self.allocator.destroy(value_pointer);
+        self.value.deinit();
+        self.allocator.destroy(self.value);
     }
 
     pub fn dump(self: StructLiteralField, depth: usize) void {
@@ -151,10 +135,12 @@ pub const StructLiteral = struct {
 
     pub fn dump(self: StructLiteral, depth: usize) void {
         std.debug.print("StructLiteral(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         if (self.type) |@"type"| {
             type_zig.print_indent(depth + 1);
             std.debug.print("type: ", .{});
@@ -166,7 +152,6 @@ pub const StructLiteral = struct {
         std.debug.print("fields: [", .{});
         if (self.fields.items.len > 0) {
             std.debug.print("\n", .{});
-
             for (self.fields.items, 0..) |field, i| {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
@@ -182,7 +167,6 @@ pub const StructLiteral = struct {
         std.debug.print("generics: [", .{});
         if (self.generics.items.len > 0) {
             std.debug.print("\n", .{});
-
             for (self.generics.items, 0..) |generic, i| {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
@@ -218,10 +202,12 @@ pub const ArrayLiteral = struct {
 
     pub fn dump(self: ArrayLiteral, depth: usize) void {
         std.debug.print("ArrayLiteral(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("elements: [", .{});
         if (self.elements.items.len > 0) {
@@ -231,10 +217,12 @@ pub const ArrayLiteral = struct {
                 type_zig.print_indent(depth + 2);
                 element.dump(depth + 2);
             }
+
             std.debug.print("\n", .{});
             type_zig.print_indent(depth + 1);
         }
         std.debug.print("]\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -269,21 +257,21 @@ pub const BinaryExpression = struct {
     right: *Node,
 
     pub fn deinit(self: *BinaryExpression) void {
-        var left = @constCast(self.left);
-        left.deinit();
-        self.allocator.destroy(left);
+        self.left.deinit();
+        self.allocator.destroy(self.left);
 
-        var right = @constCast(self.right);
-        right.deinit();
-        self.allocator.destroy(right);
+        self.right.deinit();
+        self.allocator.destroy(self.right);
     }
 
     pub fn dump(self: BinaryExpression, depth: usize) void {
         std.debug.print("BinaryExpression(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("operator: ", .{});
         self.operator.dump();
@@ -320,18 +308,22 @@ pub const UnaryExpression = struct {
 
     pub fn dump(self: UnaryExpression, depth: usize) void {
         std.debug.print("UnaryExpression(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("operator: ", .{});
         self.operator.dump();
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("operand: ", .{});
         self.operand.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -364,28 +356,32 @@ pub const CallExpression = struct {
 
     pub fn dump(self: CallExpression, depth: usize) void {
         std.debug.print("CallExpression(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("callee: ", .{});
         self.callee.dump(depth + 1);
+        std.debug.print(",\n", .{});
 
+        type_zig.print_indent(depth + 1);
+        std.debug.print("generics: [", .{});
         if (self.generics.items.len > 0) {
-            std.debug.print(",\n", .{});
-            type_zig.print_indent(depth + 1);
-            std.debug.print("generics: [", .{});
-
+            std.debug.print("\n", .{});
             for (self.generics.items, 0..) |generic, i| {
-                if (i > 0) std.debug.print(", ", .{});
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
                 generic.dump(depth + 2);
             }
 
-            std.debug.print("]", .{});
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
         }
+        std.debug.print("],\n", .{});
 
-        std.debug.print(",\n", .{});
         type_zig.print_indent(depth + 1);
         std.debug.print("arguments: [", .{});
         if (self.arguments.items.len > 0) {
@@ -400,7 +396,8 @@ pub const CallExpression = struct {
             std.debug.print("\n", .{});
             type_zig.print_indent(depth + 1);
         }
-        std.debug.print("],\n", .{});
+        std.debug.print("]\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -418,24 +415,26 @@ pub const MemberExpression = struct {
     pub fn deinit(self: *MemberExpression) void {
         self.object.deinit();
         self.allocator.destroy(self.object);
-
-        self.property.deinit();
     }
 
     pub fn dump(self: MemberExpression, depth: usize) void {
         std.debug.print("MemberExpression(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("object: ", .{});
         self.object.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("property: ", .{});
         self.property.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -460,18 +459,22 @@ pub const IndexExpression = struct {
 
     pub fn dump(self: IndexExpression, depth: usize) void {
         std.debug.print("IndexExpression(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("array: ", .{});
         self.array.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("index: ", .{});
         self.index.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -492,14 +495,17 @@ pub const ExpressionStatement = struct {
 
     pub fn dump(self: ExpressionStatement, depth: usize) void {
         std.debug.print("ExpressionStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("expression: ", .{});
         self.expression.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -526,10 +532,12 @@ pub const BlockStatement = struct {
 
     pub fn dump(self: BlockStatement, depth: usize) void {
         std.debug.print("BlockStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("statements: [", .{});
         if (self.statements.items.len > 0) {
@@ -539,6 +547,7 @@ pub const BlockStatement = struct {
                 type_zig.print_indent(depth + 2);
                 stmt.dump(depth + 2);
             }
+
             std.debug.print("\n", .{});
             type_zig.print_indent(depth + 1);
         }
@@ -562,19 +571,29 @@ pub const ImportStatement = struct {
     path: std.ArrayListUnmanaged(Identifier),
 
     pub fn deinit(self: *ImportStatement) void {
-        for (self.path.items) |*identifier| {
-            identifier.deinit();
-        }
         self.path.deinit(self.allocator);
     }
 
     pub fn dump(self: ImportStatement, depth: usize) void {
-        std.debug.print("ImportStatement(path: [", .{});
-        for (self.path.items, 0..) |identifier, i| {
-            if (i > 0) std.debug.print(", ", .{});
-            identifier.dump(depth + 1);
+        std.debug.print("ImportStatement(\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("path: [", .{});
+        if (self.path.items.len > 0) {
+            std.debug.print("\n", .{});
+            for (self.path.items, 0..) |identifier, i| {
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
+                identifier.dump(depth + 2);
+            }
+
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
         }
-        std.debug.print("])", .{});
+        std.debug.print("]\n", .{});
+
+        type_zig.print_indent(depth);
+        std.debug.print(")", .{});
     }
 };
 
@@ -591,12 +610,15 @@ pub const ExternFnStatement = struct {
 
     pub fn dump(self: ExternFnStatement, depth: usize) void {
         std.debug.print("ExternFnStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("proto: ", .{});
         self.proto.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -617,16 +639,20 @@ pub const ExternVarStatement = struct {
 
     pub fn dump(self: ExternVarStatement, depth: usize) void {
         std.debug.print("ExternVarStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -671,6 +697,8 @@ pub const StructStatement = struct {
     generics: std.ArrayListUnmanaged(GenericParameter),
     fields: std.ArrayListUnmanaged(StructStatementField),
 
+    attributes: std.ArrayListUnmanaged(attribute_zig.StructAttribute),
+
     pub fn deinit(self: *StructStatement) void {
         if (self.parent) |*p| p.deinit();
 
@@ -687,31 +715,48 @@ pub const StructStatement = struct {
 
     pub fn dump(self: StructStatement, depth: usize) void {
         std.debug.print("StructStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("type: ", .{});
+
         if (self.type) |@"type"| {
+            type_zig.print_indent(depth + 1);
+            std.debug.print("type: ", .{});
             @"type".dump(depth + 1);
+            std.debug.print(",\n", .{});
         }
-        std.debug.print(",\n", .{});
 
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
-        if (self.parent) |p| {
-            std.debug.print(",\n", .{});
+        std.debug.print(",\n", .{});
+
+        if (self.parent) |parent| {
             type_zig.print_indent(depth + 1);
             std.debug.print("parent: ", .{});
-            p.dump(depth + 1);
+            parent.dump(depth + 1);
+            std.debug.print(",\n", .{});
         }
-        std.debug.print(",\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("generics: [", .{});
+        if (self.generics.items.len > 0) {
+            std.debug.print("\n", .{});
+            for (self.generics.items, 0..) |generic, i| {
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
+                generic.dump(depth + 2);
+            }
+
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
+        }
+        std.debug.print("]\n", .{});
 
         type_zig.print_indent(depth + 1);
         std.debug.print("fields: [", .{});
         if (self.fields.items.len > 0) {
             std.debug.print("\n", .{});
-
             for (self.fields.items, 0..) |field, i| {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
@@ -724,14 +769,13 @@ pub const StructStatement = struct {
         std.debug.print("]\n", .{});
 
         type_zig.print_indent(depth + 1);
-        std.debug.print("generics: [", .{});
-        if (self.generics.items.len > 0) {
+        std.debug.print("attributes: [", .{});
+        if (self.attributes.items.len > 0) {
             std.debug.print("\n", .{});
-
-            for (self.generics.items, 0..) |generic, i| {
+            for (self.attributes.items, 0..) |attribute, i| {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
-                generic.dump(depth + 2);
+                attribute.dump(depth + 2);
             }
 
             std.debug.print("\n", .{});
@@ -756,15 +800,18 @@ pub const StructStatementField = struct {
     }
 
     pub fn dump(self: StructStatementField, depth: usize) void {
-        std.debug.print("StructField(\n", .{});
+        std.debug.print("StructStatementField(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -797,22 +844,23 @@ pub const FunctionProto = struct {
 
     pub fn dump(self: FunctionProto, depth: usize) void {
         std.debug.print("FunctionProto(\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
-        type_zig.print_indent(depth + 1);
-        std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
 
         type_zig.print_indent(depth + 1);
         std.debug.print("generics: [", .{});
         if (self.generics.items.len > 0) {
             std.debug.print("\n", .{});
-
-            for (self.generics.items, 0..) |gp, i| {
+            for (self.generics.items, 0..) |generic_parameter, i| {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
-                gp.dump(depth + 2);
+                generic_parameter.dump(depth + 2);
             }
 
             std.debug.print("\n", .{});
@@ -824,11 +872,10 @@ pub const FunctionProto = struct {
         std.debug.print("parameters: [", .{});
         if (self.parameters.items.len > 0) {
             std.debug.print("\n", .{});
-
-            for (self.parameters.items, 0..) |param, i| {
+            for (self.parameters.items, 0..) |parameter, i| {
                 if (i > 0) std.debug.print(",\n", .{});
                 type_zig.print_indent(depth + 2);
-                param.dump(depth + 2);
+                parameter.dump(depth + 2);
             }
 
             std.debug.print("\n", .{});
@@ -854,6 +901,8 @@ pub const FunctionStatement = struct {
     proto: FunctionProto,
     body: BlockStatement,
 
+    attributes: std.ArrayListUnmanaged(attribute_zig.FunctionAttribute),
+
     pub fn deinit(self: *FunctionStatement) void {
         self.proto.deinit();
         self.body.deinit();
@@ -861,14 +910,32 @@ pub const FunctionStatement = struct {
 
     pub fn dump(self: FunctionStatement, depth: usize) void {
         std.debug.print("FunctionStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("proto: ", .{});
         self.proto.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("body: ", .{});
         self.body.dump(depth + 1);
         std.debug.print("\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("attributes: [", .{});
+        if (self.attributes.items.len > 0) {
+            std.debug.print("\n", .{});
+            for (self.attributes.items, 0..) |attribute, i| {
+                if (i > 0) std.debug.print(",\n", .{});
+                type_zig.print_indent(depth + 2);
+                attribute.dump(depth + 2);
+            }
+
+            std.debug.print("\n", .{});
+            type_zig.print_indent(depth + 1);
+        }
+        std.debug.print("]\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -901,26 +968,32 @@ pub const VariableStatement = struct {
 
     pub fn dump(self: VariableStatement, depth: usize) void {
         std.debug.print("VariableStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("visibility: {s},\n", .{@tagName(self.visibility)});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("is_mut: {},\n", .{self.is_mut});
+
         if (self.type) |type_expr| {
             type_zig.print_indent(depth + 1);
             std.debug.print("type: ", .{});
             type_expr.dump(depth + 1);
             std.debug.print(",\n", .{});
         }
+
         if (self.initializer) |init| {
             type_zig.print_indent(depth + 1);
             std.debug.print("initializer: ", .{});
             init.dump(depth + 1);
-            std.debug.print(",\n", .{});
+            std.debug.print("\n", .{});
         }
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -951,10 +1024,12 @@ pub const IfExpression = struct {
 
     pub fn dump(self: IfExpression, depth: usize) void {
         std.debug.print("IfExpression(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("condition: ", .{});
         self.condition.dump(depth + 1);
@@ -969,7 +1044,7 @@ pub const IfExpression = struct {
             type_zig.print_indent(depth + 1);
             std.debug.print("alternative: ", .{});
             alternative.dump(depth + 1);
-            std.debug.print(",\n", .{});
+            std.debug.print("\n", .{});
         }
 
         type_zig.print_indent(depth);
@@ -1009,28 +1084,33 @@ pub const ForStatement = struct {
 
     pub fn dump(self: ForStatement, depth: usize) void {
         std.debug.print("ForStatement(\n", .{});
-        if (self.init) |i| {
+
+        if (self.init) |init| {
             type_zig.print_indent(depth + 1);
             std.debug.print("init: ", .{});
-            i.dump(depth + 1);
+            init.dump(depth + 1);
             std.debug.print(",\n", .{});
         }
-        if (self.condition) |c| {
+
+        if (self.condition) |condition| {
             type_zig.print_indent(depth + 1);
             std.debug.print("condition: ", .{});
-            c.dump(depth + 1);
+            condition.dump(depth + 1);
             std.debug.print(",\n", .{});
         }
-        if (self.update) |u| {
+
+        if (self.update) |update| {
             type_zig.print_indent(depth + 1);
             std.debug.print("update: ", .{});
-            u.dump(depth + 1);
+            update.dump(depth + 1);
             std.debug.print(",\n", .{});
         }
+
         type_zig.print_indent(depth + 1);
         std.debug.print("body: ", .{});
         self.body.dump(depth + 1);
-        std.debug.print(",\n", .{});
+        std.debug.print("\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -1053,14 +1133,17 @@ pub const WhileStatement = struct {
 
     pub fn dump(self: WhileStatement, depth: usize) void {
         std.debug.print("WhileStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("condition: ", .{});
         self.condition.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("body: ", .{});
         self.body.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -1081,14 +1164,17 @@ pub const ReturnStatement = struct {
 
     pub fn dump(self: ReturnStatement, depth: usize) void {
         std.debug.print("ReturnStatement(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("value: ", .{});
         self.value.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -1101,22 +1187,24 @@ pub const GenericParameter = struct {
     constraint: ?TypeExpression = null,
 
     pub fn deinit(self: *GenericParameter) void {
-        self.name.deinit();
         if (self.constraint) |*c| c.deinit();
     }
 
     pub fn dump(self: GenericParameter, depth: usize) void {
         std.debug.print("GenericParameter(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
-        if (self.constraint) |c| {
-            std.debug.print(",\n", .{});
+        std.debug.print(",\n", .{});
+
+        if (self.constraint) |constraint| {
             type_zig.print_indent(depth + 1);
             std.debug.print("constraint: ", .{});
-            c.dump(depth + 1);
+            constraint.dump(depth + 1);
+            std.debug.print("\n", .{});
         }
-        std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -1129,21 +1217,16 @@ pub const GenericArgument = struct {
     type: TypeExpression,
 
     pub fn deinit(self: *GenericArgument) void {
-        if (self.name) |*name| {
-            name.deinit();
-        }
-
         self.type.deinit();
     }
 
     pub fn dump(self: GenericArgument, depth: usize) void {
         std.debug.print("GenericArgument(\n", .{});
+
         type_zig.print_indent(depth + 1);
+        std.debug.print("name: ", .{});
         if (self.name) |name| {
-            std.debug.print("name: ", .{});
             name.dump(depth + 1);
-        } else {
-            std.debug.print("name: null", .{});
         }
         std.debug.print(",\n", .{});
 
@@ -1166,22 +1249,25 @@ pub const Parameter = struct {
     is_variadic: bool = false,
 
     pub fn deinit(self: *Parameter) void {
-        self.name.deinit();
         self.type.deinit();
     }
 
     pub fn dump(self: Parameter, depth: usize) void {
         std.debug.print("Parameter(\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("is_variadic: {s},\n", .{if (self.is_variadic) "true" else "false"});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("name: ", .{});
         self.name.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("type: ", .{});
         self.type.dump(depth + 1);
         std.debug.print("\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }
@@ -1191,33 +1277,36 @@ pub const Argument = struct {
     allocator: std.mem.Allocator,
 
     position: Position,
+    type: Type = Type.unknown(),
 
     name: ?Identifier,
     value: *Node,
 
     pub fn deinit(self: *Argument) void {
-        if (self.name) |*name| {
-            name.deinit();
-        }
-
         self.value.deinit();
         self.allocator.destroy(self.value);
     }
 
     pub fn dump(self: Argument, depth: usize) void {
         std.debug.print("Argument(\n", .{});
+
         type_zig.print_indent(depth + 1);
+        std.debug.print("name: ", .{});
         if (self.name) |name| {
-            std.debug.print("name: ", .{});
             name.dump(depth + 1);
-        } else {
-            std.debug.print("name: null", .{});
         }
         std.debug.print(",\n", .{});
+
+        type_zig.print_indent(depth + 1);
+        std.debug.print("type: ", .{});
+        self.type.dump(depth + 1);
+        std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth + 1);
         std.debug.print("value: ", .{});
         self.value.dump(depth + 1);
         std.debug.print(",\n", .{});
+
         type_zig.print_indent(depth);
         std.debug.print(")", .{});
     }

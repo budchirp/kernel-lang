@@ -1,10 +1,10 @@
 extern fn printf(fmt: string, ...args: i32[]): void
 
-extern fn malloc(size: i32): *void
+extern fn malloc(size: i64): *void
 extern fn free(ptr: *void): void
 
 fn allocate<T>(value: T): *T {
-    var ptr = malloc(128) as *T;
+    var ptr = malloc(123 as i64) as *T;
     *ptr = value
 
     return ptr

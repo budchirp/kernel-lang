@@ -23,9 +23,6 @@ pub const Program = struct {
         }
 
         self.statements.deinit(self.allocator);
-
-        self.env.deinit();
-        self.allocator.destroy(self.env);
     }
 
     pub fn dump(self: Program, depth: usize) void {

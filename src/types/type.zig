@@ -396,6 +396,7 @@ pub const Type = union(enum) {
     Unknown: void,
     String: void,
     Boolean: void,
+    Any: void,
     Integer: IntegerType,
     Float: FloatType,
     Array: ArrayType,
@@ -433,6 +434,9 @@ pub const Type = union(enum) {
 
     pub fn dump(self: Type, depth: usize) void {
         switch (self) {
+            .Any => {
+                std.debug.print("AnyType()", .{});
+            },
             .Unknown => {
                 std.debug.print("UnknownType()", .{});
             },
@@ -458,6 +462,7 @@ pub const Type = union(enum) {
 
     pub fn to_string(self: Type) []const u8 {
         switch (self) {
+            .Any => return "any",
             .Unknown => return "unknown",
             .String => return "string",
             .Boolean => return "bool",
@@ -495,11 +500,19 @@ pub const Type = union(enum) {
         return self == .Unknown;
     }
 
+    pub fn is_any(self: Type) bool {
+        return self == .Any;
+    }
+
     pub fn is_numeric(self: Type) bool {
         return self == .Integer or self == .Float or self.is_unknown() or self == .Named;
     }
 
     pub fn is_compatible(expected: Type, actual: Type) bool {
+        if (expected.is_any() or actual.is_any()) {
+            return true;
+        }
+
         if (expected.is_unknown() or actual.is_unknown()) {
             return true;
         }
@@ -529,17 +542,8 @@ pub const Type = union(enum) {
         }
 
         return switch (expected) {
-            .Integer => |expected_int| blk: {
-                const actual_int = actual.Integer;
-                if (expected_int.is_unsigned != actual_int.is_unsigned) break :blk false;
-
-                break :blk actual_int.size <= expected_int.size;
-            },
-            .Float => |expected_float| blk: {
-                const actual_float = actual.Float;
-
-                break :blk actual_float.size <= expected_float.size;
-            },
+            .Integer => actual.Integer.size == expected.Integer.size and actual.Integer.is_unsigned == expected.Integer.is_unsigned,
+            .Float => actual.Float.size == expected.Float.size,
             .String => true,
             .Boolean => true,
             .Void => true,
@@ -567,6 +571,19 @@ pub const Type = union(enum) {
 
                 return true;
             },
+            .StructLiteral => |struct_literal| {
+                if (actual != .StructLiteral) return false;
+
+                if (!Type.is_compatible(Type{ .Struct = struct_literal.@"struct".* }, Type{ .Struct = actual.StructLiteral.@"struct".* })) return false;
+
+                if (struct_literal.generics.len != actual.StructLiteral.generics.len) return false;
+
+                for (struct_literal.generics, 0..) |generic, i| {
+                    if (!Type.is_compatible(generic.type.*, actual.StructLiteral.generics[i].type.*)) return false;
+                }
+
+                return true;
+            },
             .Function => |function| {
                 if (actual != .Function) return false;
 
@@ -580,9 +597,9 @@ pub const Type = union(enum) {
 
                 return true;
             },
-            .Unknown => true,
+            .Unknown => false,
             .Named => true,
-            else => true,
+            .Any => true,
         };
     }
 };

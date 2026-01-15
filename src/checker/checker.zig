@@ -564,7 +564,10 @@ pub const Checker = struct {
                 break :blk Type.unknown();
             },
             .As => right_type,
-            else => Type.unknown(),
+            else => {
+                self.context.logger.err(ErrorKind.TypeError, expression.position, "unknown operator");
+                return error.TypeError;
+            },
         };
 
         expression.type = result_type;
@@ -606,7 +609,10 @@ pub const Checker = struct {
                     return error.TypeError;
                 },
             },
-            else => Type.unknown(),
+            else => {
+                self.context.logger.err(ErrorKind.TypeError, expression.position, "unknown operator");
+                return error.TypeError;
+            },
         };
 
         expression.type = result_type;
@@ -651,7 +657,11 @@ pub const Checker = struct {
 
         var arguments = std.ArrayListUnmanaged(Type){};
         for (expression.arguments.items) |*argument| {
-            try arguments.append(self.allocator, try self.check_expression(argument.value));
+            const argument_type = try self.check_expression(argument.value);
+
+            argument.type = argument_type;
+
+            try arguments.append(self.allocator, argument_type);
         }
 
         var function: ?type_zig.FunctionType = null;
@@ -709,6 +719,11 @@ pub const Checker = struct {
 
             for (0..required_parameters) |i| {
                 const parameter_type = try self.substitute_type(func.parameters[i].type.*, substitutions);
+
+                parameter_type.dump(0);
+                std.debug.print("\n", .{});
+                arguments.items[i].dump(0);
+                std.debug.print("\n", .{});
 
                 if (!Type.is_compatible(parameter_type, arguments.items[i])) {
                     self.context.logger.err(ErrorKind.TypeError, expression.position, "argument type mismatch");
